@@ -1,0 +1,10 @@
+[package]
+name = "editor_learn"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[[bin]]
+name = "editor_learn"
+path = "main.rs"
