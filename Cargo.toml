@@ -1,5 +1,5 @@
 [package]
-name = "editor_learn"
+name = "ride-editor"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,5 +7,5 @@ edition = "2024"
 slint = "1.17.1"
 
 [[bin]]
-name = "editor_learn"
-path = "main.rs"
+name = "ride-editor"
+path = "src/main.rs"
