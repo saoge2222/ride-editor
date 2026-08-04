@@ -19,6 +19,27 @@ To add a new `.slint` file, either:
 - `import` it into `main.slint`
 - or pass it as an additional argument to `slint_build::compile()` in `build.rs`
 
+## Component Modularization
+
+Each UI component should reside in its own `.slint` file under `src/gui/src/`, exporting a single component per file.
+
+In `main.slint`, import components via `import { ComponentName } from "file_name.slint";` and compose them within `MainEditorWindow`'s layout.
+
+Example:
+
+```slint
+// main.slint
+import { StatusBar } from "status_bar.slint";
+import { EditorArea } from "editor_area.slint";
+
+export component MainEditorWindow inherits Window {
+    VerticalLayout {
+        EditorArea { }
+        StatusBar { }
+    }
+}
+```
+
 ## Slint Conventions
 
 - **Naming**: components use `UpperCamelCase` (e.g. `MainEditorWindow`, `StatusBar`)

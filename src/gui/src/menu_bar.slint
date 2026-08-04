@@ -1,0 +1,59 @@
+import "fonts/SourceHanSans-VF.ttf.ttc";
+
+component MenuItem {
+    in property <string> label;
+
+    Rectangle {
+        background: touch.has-hover ? #4E5254 : transparent;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+
+            Text {
+                text: label;
+                color: #A9B7C6;
+                font-family: "Source Han Sans VF";
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        touch := TouchArea { }
+    }
+}
+
+export component MenuBar {
+    height: 22px;
+
+    Rectangle {
+        background: #3C3F41;
+
+        HorizontalLayout {
+            MenuItem {
+                horizontal-stretch: 0;
+                label: "File";
+            }
+            MenuItem {
+                horizontal-stretch: 0;
+                label: "Edit";
+            }
+            MenuItem {
+                horizontal-stretch: 0;
+                label: "View";
+            }
+            MenuItem {
+                horizontal-stretch: 0;
+                label: "Run";
+            }
+            MenuItem {
+                horizontal-stretch: 0;
+                label: "Help";
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+        }
+    }
+}

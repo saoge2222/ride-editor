@@ -1,7 +1,78 @@
 import { Button } from "std-widgets.slint";
+import { CommandPanel } from "command_panel.slint";
+import { MenuBar } from "menu_bar.slint";
+import { StatusLine } from "statusLine.slint";
 
 export component MainEditorWindow inherits Window {
-    height: 300px;
-    width: 300px;
+    in-out property <string> current-mode: "NORMAL";
+    in-out property <bool> panel-open: false;
+    in-out property <string> command-text: "";
+    preferred-height: 400px;
+    preferred-width: 600px;
     title: "RIDE Editor";
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == "" || event.text == "\u{1b}" {
+                root.current-mode = "NORMAL";
+                root.panel-open = false;
+                root.command-text = "";
+                return accept;
+            }
+            if event.text == ":" && root.current-mode != "COMMAND" {
+                root.current-mode = "COMMAND";
+                root.panel-open = true;
+                return accept;
+            }
+            if root.current-mode == "COMMAND" {
+                return reject;
+            }
+            if event.text == "i" {
+                root.current-mode = "INSERT";
+                return accept;
+            }
+            if event.text == "v" {
+                root.current-mode = "VISUAL";
+                return accept;
+            }
+            if event.text == "R" {
+                root.current-mode = "REPLACE";
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            VerticalLayout {
+                MenuBar { }
+
+                Rectangle {
+                    background: #2B2B2B;
+                }
+
+                StatusLine {
+                    mode: root.current-mode;
+                    file-name: "untitled.txt";
+                }
+            }
+
+            CommandPanel {
+                x: (parent.width - parent.width / 3) / 2;
+                y: parent.height - 24px - 28px - 8px;
+                width: parent.width / 3;
+                open: root.panel-open;
+                input-text <=> root.command-text;
+                command-submitted(text) => {
+                    root.panel-open = false;
+                    root.current-mode = "NORMAL";
+                    root.command-text = "";
+                }
+                command-cancelled() => {
+                    root.panel-open = false;
+                    root.current-mode = "NORMAL";
+                    root.command-text = "";
+                }
+            }
+        }
+    }
 }

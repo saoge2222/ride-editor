@@ -40,7 +40,7 @@ Do **not** modify or read as project source:
 - `/target` — build output
 - `/project_docs` — reference docs
 - `/.vscode` — editor config
-- `/src/temp` — test/scratch code
+- `**/temp/` — test/scratch code (any temp folder under project root)
 
 ## Workflow Rules
 
@@ -52,7 +52,7 @@ Do **not** modify or read as project source:
 ## Git Conventions
 
 - Confirm before every commit
-- Never commit: `/.vscode`, `/project_docs`, `/target`, `/src/temp`
+- Never commit: `/.vscode`, `/project_docs`, `/target`, `**/temp/`
 - **Commit prefix tags**:
   - `feat-backend:` — Rust source changes
   - `feat-frontend:` — slint UI changes

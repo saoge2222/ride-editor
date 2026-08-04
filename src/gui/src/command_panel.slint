@@ -1,0 +1,65 @@
+import "fonts/SourceHanSans-VF.ttf.ttc";
+
+export component CommandPanel {
+    in-out property <bool> open: false;
+    in-out property <string> input-text;
+    callback command-submitted(string);
+    callback command-cancelled();
+    height: 28px;
+
+    states [
+        shown when open : {
+            opacity: 1.0;
+        }
+        hidden when !open : {
+            opacity: 0.0;
+        }
+    ]
+
+    animate opacity { duration: 150ms; easing: ease-in-out; }
+
+    opacity: 0.0;
+
+    Rectangle {
+        background: #2D2F31;
+        border-color: #4A4D50;
+        border-width: 1px;
+        border-radius: 4px;
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+
+            Text {
+                text: ":";
+                color: #A9B7C6;
+                font-family: "Source Han Sans VF";
+                vertical-alignment: center;
+            }
+
+            cmd-input := TextInput {
+                text <=> root.input-text;
+                color: #A9B7C6;
+                font-family: "Source Han Sans VF";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+
+                accepted() => {
+                    root.command-submitted(root.input-text);
+                }
+            }
+        }
+
+        FocusScope {
+            forward-focus: cmd-input;
+
+            key-pressed(event) => {
+                if event.text == "" || event.text == "\u{1b}" {
+                    root.command-cancelled();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+}
