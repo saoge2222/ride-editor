@@ -12,4 +12,4 @@ slint-build = "1.17.1"
 
 [[bin]]
 name = "ride-editor"
-path = "src/main.rs"
+path = "crates/main.rs"
