@@ -37,15 +37,32 @@ export component CommandPanel {
                 vertical-alignment: center;
             }
 
-            cmd-input := TextInput {
-                text <=> root.input-text;
-                color: #A9B7C6;
-                font-family: "Source Han Sans VF";
-                vertical-alignment: center;
+            Rectangle {
                 horizontal-stretch: 1;
 
-                accepted() => {
-                    root.command-submitted(root.input-text);
+                cmd-input := TextInput {
+                    text <=> root.input-text;
+                    color: #A9B7C6;
+                    font-family: "Source Han Sans VF";
+                    vertical-alignment: center;
+                    x: 0;
+                    y: 0;
+                    width: 100%;
+                    height: 100%;
+
+                    accepted() => {
+                        root.command-submitted(root.input-text);
+                    }
+                }
+
+                placeholder := Text {
+                    text: root.input-text == "" ? "Enter Vim commands..." : "";
+                    color: #606366;
+                    font-family: "Source Han Sans VF";
+                    vertical-alignment: center;
+                    x: 0;
+                    y: 0;
+                    height: 100%;
                 }
             }
         }

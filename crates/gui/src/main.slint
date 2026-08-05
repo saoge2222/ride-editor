@@ -1,58 +1,96 @@
 import { Button } from "std-widgets.slint";
 import { CommandPanel } from "command_panel.slint";
+import { FileEntryModel, FileExplorer } from "file_explorer.slint";
+import { EditorTabItem, EditorArea } from "editor_area.slint";
+import { LeftSideBar, RightSideBar } from "side_bar.slint";
 import { MenuBar } from "menu_bar.slint";
 import { StatusLine } from "statusLine.slint";
 
 export component MainEditorWindow inherits Window {
     in-out property <string> current-mode: "NORMAL";
     in-out property <bool> panel-open: false;
+    in-out property <bool> explorer-open: false;
     in-out property <string> command-text: "";
+    in-out property <bool> key-handled: false;
+    in-out property <[FileEntryModel]> entries;
+    in-out property <string> current-path: "";
+    in-out property <[EditorTabItem]> open-tabs;
+    in-out property <int> active-tab-index: -1;
+    in-out property <string> editor-text: "";
+    in-out property <string> line-numbers-text: "";
+    callback key-down(string);
+    callback command-commit(string);
+    callback command-cancel();
+    callback file-explorer-expand(string);
+    callback file-explorer-open(string);
+    callback tab-clicked(int);
+    callback tab-close-requested(int);
+    callback editor-text-changed();
     preferred-height: 400px;
     preferred-width: 600px;
     title: "RIDE Editor";
 
     FocusScope {
         key-pressed(event) => {
-            if event.text == "" || event.text == "\u{1b}" {
-                root.current-mode = "NORMAL";
-                root.panel-open = false;
-                root.command-text = "";
-                return accept;
-            }
-            if event.text == ":" && root.current-mode != "COMMAND" {
-                root.current-mode = "COMMAND";
-                root.panel-open = true;
-                return accept;
-            }
-            if root.current-mode == "COMMAND" {
-                return reject;
-            }
-            if event.text == "i" {
-                root.current-mode = "INSERT";
-                return accept;
-            }
-            if event.text == "v" {
-                root.current-mode = "VISUAL";
-                return accept;
-            }
-            if event.text == "R" {
-                root.current-mode = "REPLACE";
+            root.key-handled = false;
+            root.key-down(event.text);
+            if root.key-handled {
                 return accept;
             }
             return reject;
         }
 
         Rectangle {
+            width: 100%;
+            height: 100%;
+
             VerticalLayout {
+                width: 100%;
+                height: 100%;
+
                 MenuBar { }
 
-                Rectangle {
-                    background: #2B2B2B;
+                HorizontalLayout {
+                    left-bar := LeftSideBar {
+                        files-clicked => {
+                            root.explorer-open = !root.explorer-open;
+                        }
+                    }
+
+                    FileExplorer {
+                        open: root.explorer-open;
+                        entries <=> root.entries;
+                        current-path <=> root.current-path;
+                        expand-folder(path) => {
+                            root.file-explorer-expand(path);
+                        }
+                        open-file(path) => {
+                            root.file-explorer-open(path);
+                        }
+                    }
+
+                    EditorArea {
+                        tabs <=> root.open-tabs;
+                        active-index <=> root.active-tab-index;
+                        editor-text <=> root.editor-text;
+                        line-numbers-text <=> root.line-numbers-text;
+                        tab-clicked(idx) => {
+                            root.tab-clicked(idx);
+                        }
+                        tab-close-requested(idx) => {
+                            root.tab-close-requested(idx);
+                        }
+                        editor-text-changed() => {
+                            root.editor-text-changed();
+                        }
+                    }
+
+                    RightSideBar { }
                 }
 
                 StatusLine {
                     mode: root.current-mode;
-                    file-name: "untitled.txt";
+                    file-name: root.open-tabs.length > 0 && root.active-tab-index >= 0 ? root.open-tabs[root.active-tab-index].file-name : "untitled.txt";
                 }
             }
 
@@ -63,14 +101,10 @@ export component MainEditorWindow inherits Window {
                 open: root.panel-open;
                 input-text <=> root.command-text;
                 command-submitted(text) => {
-                    root.panel-open = false;
-                    root.current-mode = "NORMAL";
-                    root.command-text = "";
+                    root.command-commit(root.command-text);
                 }
                 command-cancelled() => {
-                    root.panel-open = false;
-                    root.current-mode = "NORMAL";
-                    root.command-text = "";
+                    root.command-cancel();
                 }
             }
         }

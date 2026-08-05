@@ -1,0 +1,106 @@
+component ToolBarItem {
+    in property <color> icon-bg: #606366;
+    callback clicked();
+    width: 22px;
+    height: 22px;
+
+    Rectangle {
+        background: touch.has-hover ? #3C3F41 : transparent;
+        width: 22px;
+        height: 22px;
+
+        Rectangle {
+            background: icon-bg;
+            width: 14px;
+            height: 14px;
+            x: 4px;
+            y: 4px;
+        }
+
+        touch := TouchArea {
+            clicked => {
+                root.clicked();
+            }
+        }
+    }
+}
+
+component ToolBarSlot {
+    width: 22px;
+    height: 22px;
+
+    Rectangle {
+        background: transparent;
+        width: 22px;
+        height: 22px;
+
+        Rectangle {
+            background: #313335;
+            width: 14px;
+            height: 14px;
+            x: 4px;
+            y: 4px;
+        }
+    }
+}
+
+export component LeftSideBar {
+    callback files-clicked();
+    height: 100%;
+    width: 22px;
+
+    Rectangle {
+        background: #313335;
+        width: 100%;
+        height: 100%;
+
+        VerticalLayout {
+            files-btn := ToolBarItem {
+                icon-bg: #6A8759;
+                clicked => {
+                    root.files-clicked();
+                }
+            }
+            ToolBarItem { icon-bg: #6897BB; }
+            ToolBarItem { icon-bg: #FFC66D; }
+            ToolBarItem { icon-bg: #CC7832; }
+
+            Rectangle {
+                vertical-stretch: 1;
+            }
+
+            ToolBarSlot { }
+            ToolBarSlot { }
+            ToolBarSlot { }
+            ToolBarSlot { }
+            ToolBarSlot { }
+        }
+    }
+}
+
+export component RightSideBar {
+    height: 100%;
+    width: 22px;
+
+    Rectangle {
+        background: #313335;
+        width: 100%;
+        height: 100%;
+
+        VerticalLayout {
+            ToolBarItem { icon-bg: #6A8759; }
+            ToolBarItem { icon-bg: #9876AA; }
+            ToolBarItem { icon-bg: #6897BB; }
+
+            Rectangle {
+                vertical-stretch: 1;
+            }
+
+            ToolBarSlot { }
+            ToolBarSlot { }
+            ToolBarSlot { }
+            ToolBarSlot { }
+            ToolBarSlot { }
+        }
+    }
+}
