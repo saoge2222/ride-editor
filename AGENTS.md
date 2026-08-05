@@ -10,9 +10,9 @@
 
 - **Package**: `ride-editor` (Rust edition 2024)
 - **Purpose**: Vim-keybinding GUI text editor using the slint framework
-- **Entrypoint**: `src/main.rs` — calls `slint::include_modules!()` to pull in generated slint code
-- **Slint source**: `src/gui/src/main.slint` — compiled by `build.rs` via `slint_build::compile()`
-- **Slint-specific notes**: see `src/gui/AGENTS.md`
+- **Entrypoint**: `crates/main.rs` — calls `slint::include_modules!()` to pull in generated slint code
+- **Slint source**: `crates/gui/src/main.slint` — compiled by `build.rs` via `slint_build::compile()`
+- **Slint-specific notes**: see `crates/gui/AGENTS.md`
 
 ## Build & Run
 
