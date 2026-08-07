@@ -9,10 +9,9 @@
 ## Project
 
 - **Package**: `ride-editor` (Rust edition 2024)
-- **Purpose**: Vim-keybinding GUI text editor using the slint framework
-- **Entrypoint**: `crates/main.rs` — calls `slint::include_modules!()` to pull in generated slint code
-- **Slint source**: `crates/gui/src/main.slint` — compiled by `build.rs` via `slint_build::compile()`
-- **Slint-specific notes**: see `crates/gui/AGENTS.md`
+- **Purpose**: Vim-keybinding GUI text editor using Vulkan-based rendering
+- **Entrypoint**: `crates/ride-editor/main.rs` — initializes Vulkan window and rendering pipeline
+- **GUI frontend**: `crates/gui-workbench/` — new Vulkan-based GUI (contains `fonts/`)
 
 ## Build & Run
 
@@ -25,11 +24,53 @@ cargo check              # fast compile check (no output binary)
 
 There is no separate lint, format, or test command configured.
 
+## Dependencies
+
+### Vulkan SDK
+
+#### Debian/Ubuntu
+
+```bash
+sudo apt install vulkan-tools libvulkan-dev vulkan-validationlayers-dev
+```
+
+#### Fedora
+
+```bash
+sudo dnf install vulkan-tools vulkan-loader-devel vulkan-validation-layers-devel
+```
+
+#### Arch
+
+```bash
+sudo pacman -S vulkan-tools vulkan-validation-layers
+```
+
+Verify installation:
+
+```bash
+vulkaninfo | head -20
+```
+
+### Vulkano (Rust Vulkan bindings)
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+vulkano = "0.34"
+vulkano-shaders = "0.34"
+winit = "0.29"
+```
+
+Vulkano requires the Vulkan SDK (see above) to be installed before building.
+
 ## Code Conventions
 
 - **Naming**: UpperCamelCase for types, snake_case for values
 - **No `unsafe`** anywhere
 - **No magic values** — use named constants
+- **Clarity & safety over speed** — prioritize readability and safety; avoid sacrificing code clarity or safety for runtime performance or lower overhead
 - **Comments**:
   - Module-level: `//!` doc comments, bilingual (Chinese + English), covering purpose, params, returns, errors
   - Inline: `//` in English, only on non-obvious lines
@@ -55,7 +96,7 @@ Do **not** modify or read as project source:
 - Never commit: `/.vscode`, `/project_docs`, `/target`, `**/temp/`
 - **Commit prefix tags**:
   - `feat-backend:` — Rust source changes
-  - `feat-frontend:` — slint UI changes
+  - `feat-frontend:` — Vulkan GUI changes
   - `fix:` — bug fixes
   - `buildcfg:` — Cargo.toml / build.rs changes
   - `chores:` — docs, README, .gitignore
