@@ -1,0 +1,14 @@
+[package]
+name = "ride-gui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vulkano = "0.34"
+vulkano-shaders = "0.34"
+winit = "0.28"
+raw-window-handle = "0.5"
+
+[lib]
+name = "ride_gui"
+path = "src/lib.rs"
