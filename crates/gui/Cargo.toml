@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-vulkano = "0.34"
-vulkano-shaders = "0.34"
-winit = "0.28"
-raw-window-handle = "0.5"
+vulkano = "0.35.2"
+vulkano-shaders = "0.35.0"
+winit = "0.30.13"
+raw-window-handle = "0.6.2"
 
 [lib]
 name = "ride_gui"
