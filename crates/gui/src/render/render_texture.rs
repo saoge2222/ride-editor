@@ -41,7 +41,7 @@ impl Texture {
         device: Arc<Device>,
         queue: Arc<Queue>,
         allocator: Arc<StandardMemoryAllocator>,
-        command_allocator: &StandardCommandBufferAllocator,
+        command_allocator: &Arc<StandardCommandBufferAllocator>,
         width: u32,
         height: u32,
         rgba: &[u8],
@@ -86,7 +86,7 @@ impl Texture {
 
         let queue_family_index = queue.queue_family_index();
         let mut builder = AutoCommandBufferBuilder::primary(
-            command_allocator,
+            command_allocator.clone(),
             queue_family_index,
             CommandBufferUsage::OneTimeSubmit,
         )?;

@@ -9,7 +9,6 @@ use vulkano::swapchain::{
     ColorSpace, CompositeAlpha, PresentMode, Surface, SurfaceInfo, Swapchain, SwapchainCreateInfo,
 };
 
-const MIN_IMAGE_COUNT: u32 = 2;
 const DEFAULT_LAYERS: u32 = 1;
 
 pub fn pick_swapchain_format(
@@ -41,8 +40,7 @@ impl SurfaceContext {
         let surface_info = SurfaceInfo::default();
         let capabilities = physical_device.surface_capabilities(&surface, surface_info.clone())?;
         let formats = physical_device.surface_formats(&surface, surface_info.clone())?;
-        let present_modes: Vec<PresentMode> =
-            physical_device.surface_present_modes(&surface, surface_info)?.collect();
+        let present_modes = physical_device.surface_present_modes(&surface, surface_info)?;
 
         let (format, _) = pick_format(&formats);
         let present_mode = pick_present_mode(&present_modes);
@@ -56,7 +54,7 @@ impl SurfaceContext {
             device.clone(),
             surface,
             SwapchainCreateInfo {
-                min_image_count: MIN_IMAGE_COUNT,
+                min_image_count: capabilities.min_image_count,
                 image_format: format,
                 image_extent: extent,
                 image_usage: ImageUsage::COLOR_ATTACHMENT,

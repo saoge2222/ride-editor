@@ -5,156 +5,219 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
     SubpassBeginInfo, SubpassContents, SubpassEndInfo,
 };
-use vulkano::device::Device;
+use vulkano::device::{Device, Queue};
 use vulkano::format::ClearValue;
-use vulkano::instance::Instance;
-use vulkano::swapchain::{self, SwapchainPresentInfo};
+use vulkano::memory::allocator::StandardMemoryAllocator;
+use vulkano::render_pass::RenderPass;
+use vulkano::swapchain::{self, Surface, SwapchainPresentInfo};
 use vulkano::sync::GpuFuture;
 use vulkano::{Validated, VulkanError};
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::Window;
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::window::{Window, WindowId};
 
 use super::vulkano_base_frame::FrameContext;
 use super::vulkano_base_instance::InstanceContext;
 use super::vulkano_base_render_pass::RenderPassContext;
 use super::vulkano_base_surface::{pick_swapchain_format, SurfaceContext};
-use super::vulkano_base_window::WindowContext;
+use super::vulkano_base_window::{create_window, window_size};
 
 const BACKGROUND_COLOR: [f32; 4] = [0.08, 0.08, 0.10, 1.0];
-const MIN_EXTENT: u32 = 1;
 
-pub type CommandBufferBuilder = AutoCommandBufferBuilder<
-    PrimaryAutoCommandBuffer<StandardCommandBufferAllocator>,
-    StandardCommandBufferAllocator,
->;
+pub type CommandBufferBuilder = AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>;
+
+pub struct FrameResources<'a> {
+    pub builder: &'a mut CommandBufferBuilder,
+    pub extent: [u32; 2],
+    pub image_index: u32,
+    pub device: Arc<Device>,
+    pub queue: Arc<Queue>,
+    pub render_pass: Arc<RenderPass>,
+    pub memory_allocator: Arc<StandardMemoryAllocator>,
+    pub command_allocator: Arc<StandardCommandBufferAllocator>,
+    pub queue_family_index: u32,
+}
 
 pub struct RenderLoop {
     event_loop: EventLoop<()>,
-    pub instance_context: InstanceContext,
-    pub window: Arc<Window>,
-    surface_context: SurfaceContext,
-    render_pass_context: RenderPassContext,
-    frame_context: FrameContext,
-    swapchain_needs_recreate: bool,
 }
 
 impl RenderLoop {
-    pub fn new(window_context: WindowContext) -> Result<Self, Box<dyn std::error::Error>> {
-        let WindowContext {
-            event_loop,
-            instance_context,
-            window,
-            surface,
-        } = window_context;
+    pub fn new() -> Result<Self, winit::error::EventLoopError> {
+        Ok(Self {
+            event_loop: EventLoop::new()?,
+        })
+    }
 
+    pub fn run<F>(self, frame_fn: F) -> Result<(), winit::error::EventLoopError>
+    where
+        F: FnMut(&mut FrameResources) + 'static,
+    {
+        let mut app = RenderApp {
+            frame_fn,
+            instance_context: None,
+            window: None,
+            surface_context: None,
+            render_pass_context: None,
+            frame_context: None,
+            swapchain_needs_recreate: false,
+        };
+        self.event_loop.run_app(&mut app)
+    }
+}
+
+struct RenderApp<F> {
+    frame_fn: F,
+    instance_context: Option<InstanceContext>,
+    window: Option<Arc<Window>>,
+    surface_context: Option<SurfaceContext>,
+    render_pass_context: Option<RenderPassContext>,
+    frame_context: Option<FrameContext>,
+    swapchain_needs_recreate: bool,
+}
+
+impl<F> ApplicationHandler for RenderApp<F>
+where
+    F: FnMut(&mut FrameResources) + 'static,
+{
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.instance_context.is_some() {
+            return;
+        }
+
+        let init_result = self.initialize(event_loop);
+        if let Err(error) = init_result {
+            eprintln!("ride-gui initialization failed: {error:?}");
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let owned_window_id = self.window.as_ref().map(|window| window.id());
+        if owned_window_id != Some(window_id) {
+            return;
+        }
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::Resized(_) => {
+                self.swapchain_needs_recreate = true;
+            }
+            WindowEvent::RedrawRequested => {
+                self.render_frame();
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+}
+
+impl<F> RenderApp<F>
+where
+    F: FnMut(&mut FrameResources) + 'static,
+{
+    fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn std::error::Error>> {
+        let instance_context = InstanceContext::new(event_loop)?;
+        let window = create_window(event_loop)?;
+        let surface = Surface::from_window(instance_context.instance.clone(), window.clone())?;
         let extent = window_size(&window);
         let format = pick_swapchain_format(&instance_context.device, &surface)?;
         let render_pass_context =
             RenderPassContext::new(instance_context.device.clone(), format)?;
         let surface_context = SurfaceContext::new(
             instance_context.device.clone(),
-            surface.clone(),
+            surface,
             extent,
             render_pass_context.render_pass.clone(),
         )?;
         let frame_context = FrameContext::new(instance_context.device.clone());
 
-        Ok(Self {
-            event_loop,
-            instance_context,
-            window,
-            surface_context,
-            render_pass_context,
-            frame_context,
-            swapchain_needs_recreate: false,
-        })
+        self.instance_context = Some(instance_context);
+        self.window = Some(window);
+        self.surface_context = Some(surface_context);
+        self.render_pass_context = Some(render_pass_context);
+        self.frame_context = Some(frame_context);
+        Ok(())
     }
 
-    pub fn device(&self) -> Arc<Device> {
-        self.instance_context.device.clone()
-    }
+    fn render_frame(&mut self) {
+        let surface_context = match &mut self.surface_context {
+            Some(context) => context,
+            None => return,
+        };
+        let frame_context = match &self.frame_context {
+            Some(context) => context,
+            None => return,
+        };
+        let instance_context = match &self.instance_context {
+            Some(context) => context,
+            None => return,
+        };
+        let render_pass_context = match &self.render_pass_context {
+            Some(context) => context,
+            None => return,
+        };
 
-    pub fn instance(&self) -> Arc<Instance> {
-        self.instance_context.instance.clone()
-    }
-
-    pub fn queue_family_index(&self) -> u32 {
-        self.instance_context.queue_family_index()
-    }
-
-    pub fn render_pass(&self) -> Arc<vulkano::render_pass::RenderPass> {
-        self.render_pass_context.render_pass.clone()
-    }
-
-    pub fn memory_allocator(
-        &self,
-    ) -> Arc<vulkano::memory::allocator::StandardMemoryAllocator> {
-        self.frame_context.memory_allocator.clone()
-    }
-
-    pub fn run<F>(mut self, mut frame_fn: F) -> Result<(), Box<dyn std::error::Error>>
-    where
-        F: FnMut(&mut CommandBufferBuilder, [u32; 2], u32) + 'static,
-    {
-        let queue = self.instance_context.queue.clone();
-        let queue_family_index = queue.queue_family_index();
-
-        self.event_loop.run(move |event, _event_loop_window_target, control_flow| {
-            *control_flow = ControlFlow::Wait;
-            match event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    *control_flow = ControlFlow::Exit;
-                }
-                Event::WindowEvent {
-                    event: WindowEvent::Resized(_),
-                    ..
-                } => {
-                    self.swapchain_needs_recreate = true;
-                    self.window.request_redraw();
-                }
-                Event::RedrawRequested(_) => {
-                    if self.swapchain_needs_recreate {
-                        let extent = window_size(&self.window);
-                        match self.surface_context.recreate(
-                            self.render_pass_context.render_pass.clone(),
-                            extent,
-                        ) {
-                            Ok(()) => self.swapchain_needs_recreate = false,
-                            Err(_) => return,
-                        }
-                    }
-                    match render_frame(
-                        &mut self.surface_context,
-                        &self.frame_context,
-                        &queue,
-                        queue_family_index,
-                        &mut frame_fn,
-                    ) {
-                        Ok(true) => self.swapchain_needs_recreate = true,
-                        Ok(false) => {}
-                        Err(_) => {}
-                    }
-                    self.window.request_redraw();
-                }
-                _ => {}
+        if self.swapchain_needs_recreate {
+            let extent = window_size(self.window.as_ref().unwrap());
+            match surface_context.recreate(
+                render_pass_context.render_pass.clone(),
+                extent,
+            ) {
+                Ok(()) => self.swapchain_needs_recreate = false,
+                Err(_) => return,
             }
-        })
+        }
+
+        let queue = instance_context.queue.clone();
+        let queue_family_index = instance_context.queue_family_index();
+        let device = instance_context.device.clone();
+        let render_pass = render_pass_context.render_pass.clone();
+        let memory_allocator = frame_context.memory_allocator.clone();
+
+        let suboptimal = match render_frame_inner(
+            surface_context,
+            &frame_context.command_allocator,
+            &queue,
+            queue_family_index,
+            &render_pass,
+            device,
+            memory_allocator,
+            &mut self.frame_fn,
+        ) {
+            Ok(suboptimal) => suboptimal,
+            Err(_) => return,
+        };
+
+        if suboptimal {
+            self.swapchain_needs_recreate = true;
+        }
     }
 }
 
-fn render_frame<F>(
+fn render_frame_inner<F>(
     surface_context: &mut SurfaceContext,
-    frame_context: &FrameContext,
-    queue: &Arc<vulkano::device::Queue>,
+    command_allocator: &Arc<StandardCommandBufferAllocator>,
+    queue: &Arc<Queue>,
     queue_family_index: u32,
+    render_pass: &Arc<RenderPass>,
+    device: Arc<Device>,
+    memory_allocator: Arc<StandardMemoryAllocator>,
     frame_fn: &mut F,
 ) -> Result<bool, Box<dyn std::error::Error>>
 where
-    F: FnMut(&mut CommandBufferBuilder, [u32; 2], u32) + 'static,
+    F: FnMut(&mut FrameResources) + 'static,
 {
     let (image_index, suboptimal, acquire_future) =
         match swapchain::acquire_next_image(surface_context.swapchain.clone(), None) {
@@ -165,7 +228,7 @@ where
 
     let extent = surface_context.extent;
     let mut builder = AutoCommandBufferBuilder::primary(
-        &frame_context.command_allocator,
+        command_allocator.clone(),
         queue_family_index,
         CommandBufferUsage::OneTimeSubmit,
     )?;
@@ -183,7 +246,18 @@ where
         },
     )?;
 
-    frame_fn(&mut builder, extent, image_index);
+    let mut frame_resources = FrameResources {
+        builder: &mut builder,
+        extent,
+        image_index,
+        device,
+        queue: queue.clone(),
+        render_pass: render_pass.clone(),
+        memory_allocator,
+        command_allocator: command_allocator.clone(),
+        queue_family_index,
+    };
+    frame_fn(&mut frame_resources);
 
     builder.end_render_pass(SubpassEndInfo::default())?;
     let command_buffer = builder.build()?;
@@ -201,12 +275,4 @@ where
         .wait(None)?;
 
     Ok(suboptimal)
-}
-
-fn window_size(window: &Window) -> [u32; 2] {
-    let size = window.inner_size();
-    [
-        size.width.max(MIN_EXTENT),
-        size.height.max(MIN_EXTENT),
-    ]
 }

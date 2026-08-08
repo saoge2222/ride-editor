@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use raw_window_handle::HasRawDisplayHandle;
+use raw_window_handle::HasDisplayHandle;
 use vulkano::VulkanLibrary;
 use vulkano::device::physical::PhysicalDevice;
-use vulkano::device::{Device, DeviceCreateInfo, Queue, QueueCreateInfo, QueueFlags};
+use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::swapchain::Surface;
 use vulkano::Version;
@@ -23,7 +23,7 @@ pub struct InstanceContext {
 
 impl InstanceContext {
     pub fn new(
-        display_handle: &impl HasRawDisplayHandle,
+        display_handle: &impl HasDisplayHandle,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let library = VulkanLibrary::new()?;
         let instance = Instance::new(
@@ -33,7 +33,7 @@ impl InstanceContext {
                 application_version: APPLICATION_VERSION,
                 engine_name: Some(ENGINE_NAME.to_owned()),
                 engine_version: ENGINE_VERSION,
-                enabled_extensions: Surface::required_extensions(display_handle),
+                enabled_extensions: Surface::required_extensions(display_handle)?,
                 ..Default::default()
             },
         )?;
@@ -54,6 +54,10 @@ impl InstanceContext {
                     queues: vec![QUEUE_PRIORITY],
                     ..Default::default()
                 }],
+                enabled_extensions: DeviceExtensions {
+                    khr_swapchain: true,
+                    ..DeviceExtensions::empty()
+                },
                 ..Default::default()
             },
         )?;
