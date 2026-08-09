@@ -21,9 +21,11 @@ use vulkano::pipeline::{GraphicsPipeline, PipelineBindPoint, PipelineLayout, Pip
 use vulkano::render_pass::RenderPass;
 
 use crate::vulkano_base::vulkano_base_render_loop::CommandBufferBuilder;
+use super::render_font::Font;
 use super::render_glyph::GlyphAtlas;
 use super::render_pipeline::{record_draw, PushConstants};
 use super::render_shader;
+use super::render_shape_text::TextShaper;
 use super::render_vertex::TexturedVertex;
 
 const NDC_OFFSET: f32 = -1.0;
@@ -41,6 +43,10 @@ pub struct TextRenderer {
     atlas: GlyphAtlas,
     memory_allocator: Arc<StandardMemoryAllocator>,
     vertex_buffer: Option<(Subbuffer<[TexturedVertex]>, u32)>,
+    shaper: TextShaper,
+    primary_font: Font,
+    cjk_font: Option<Font>,
+    cell_width: f32,
 }
 
 impl TextRenderer {
@@ -50,6 +56,9 @@ impl TextRenderer {
         extent: [u32; 2],
         memory_allocator: Arc<StandardMemoryAllocator>,
         atlas: GlyphAtlas,
+        shaper: TextShaper,
+        primary_font: Font,
+        cjk_font: Option<Font>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let shaders = render_shader::load_text_shaders(device.clone())?;
         let vertex_entry = shaders
@@ -104,9 +113,10 @@ impl TextRenderer {
 
         let pipeline = GraphicsPipeline::new(device.clone(), None, create_info)?;
         let descriptor_allocator = Arc::new(StandardDescriptorSetAllocator::new(
-            device,
+            device.clone(),
             StandardDescriptorSetAllocatorCreateInfo::default(),
         ));
+        let cell_width = atlas.pixel_size() as f32;
 
         Ok(Self {
             pipeline,
@@ -116,6 +126,10 @@ impl TextRenderer {
             atlas,
             memory_allocator,
             vertex_buffer: None,
+            shaper,
+            primary_font,
+            cjk_font,
+            cell_width,
         })
     }
 
@@ -128,10 +142,35 @@ impl TextRenderer {
         text: &str,
         color: [f32; 4],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let shaped = self.shaper.shape(
+            text,
+            &self.primary_font,
+            self.cjk_font.as_ref(),
+            self.cell_width,
+        );
+
+        for token in &shaped.tokens {
+            if is_whitespace_codepoint(token.codepoint) {
+                continue;
+            }
+            let font = if token.font_index == 1 {
+                self.cjk_font.as_ref().unwrap_or(&self.primary_font)
+            } else {
+                &self.primary_font
+            };
+            self.atlas.ensure_glyph(token.font_index, token.glyph_id, font);
+        }
+        self.atlas.commit_if_dirty()?;
+
         let mut vertices = Vec::new();
         let mut pen_x = x;
-        for ch in text.chars() {
-            let Some(placement) = self.atlas.glyph(ch) else {
+        for token in &shaped.tokens {
+            if is_whitespace_codepoint(token.codepoint) {
+                pen_x += token.advance_px;
+                continue;
+            }
+            let Some(placement) = self.atlas.glyph(token.font_index, token.glyph_id) else {
+                pen_x += token.advance_px;
                 continue;
             };
             if placement.width_px > 0 && placement.height_px > 0 {
@@ -171,7 +210,7 @@ impl TextRenderer {
                     color,
                 });
             }
-            pen_x += placement.advance_px;
+            pen_x += token.advance_px;
         }
         if vertices.is_empty() {
             return Ok(());
@@ -226,4 +265,10 @@ impl TextRenderer {
         self.vertex_buffer = Some((vertex_buffer, vertex_count));
         Ok(())
     }
+}
+
+fn is_whitespace_codepoint(cp: u32) -> bool {
+    char::from_u32(cp)
+        .map(|ch| ch.is_whitespace())
+        .unwrap_or(true)
 }

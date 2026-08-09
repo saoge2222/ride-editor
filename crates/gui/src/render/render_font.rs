@@ -8,6 +8,11 @@ const TAG_CMAP: [u8; 4] = *b"cmap";
 const TAG_LOCA: [u8; 4] = *b"loca";
 const TAG_GLYF: [u8; 4] = *b"glyf";
 const TAG_NAME: [u8; 4] = *b"name";
+const TAG_MAXP: [u8; 4] = *b"maxp";
+const TAG_FVAR: [u8; 4] = *b"fvar";
+const TAG_GSUB: [u8; 4] = *b"GSUB";
+const TTC_TAG: u32 = 0x74746366;
+const MAXP_NUM_GLYPHS_OFFSET: usize = 4;
 
 const SFNT_VERSION: u32 = 0x0001_0000;
 const TABLE_DIRECTORY_OFFSET: usize = 12;
@@ -22,7 +27,9 @@ const HHEA_NUM_H_METRICS: usize = 34;
 
 const CMAP_WINDOWS_PLATFORM: u16 = 3;
 const CMAP_WINDOWS_ENCODING: u16 = 1;
+const CMAP_UNICODE_FULL_ENCODING: u16 = 10;
 const CMAP_FORMAT4: u16 = 4;
+const CMAP_FORMAT12: u16 = 12;
 const CMAP_NUM_SUBTABLES_OFFSET: usize = 2;
 const CMAP_RECORD_SIZE: usize = 8;
 const CMAP_SUBTABLE_OFFSET: usize = 4;
@@ -30,6 +37,8 @@ const CMAP_FORMAT_OFFSET: usize = 0;
 const CMAP_SEGMENT_COUNT_X2: usize = 2;
 const CMAP_END_CODE_OFFSET: usize = 14;
 const CMAP_RESERVED_PAD: usize = 2;
+const CMAP12_NUM_GROUPS_OFFSET: usize = 12;
+const CMAP12_GROUP_SIZE: usize = 12;
 
 const NAME_RECORD_SIZE: usize = 12;
 const NAME_COUNT_OFFSET: usize = 2;
@@ -54,6 +63,22 @@ const INSTRUCTION_LENGTH_OFFSET: usize = 2;
 const HMTX_ENTRY_SIZE: usize = 4;
 const GLYPH_BBOX_BYTES: usize = 8;
 
+const FVAR_AXIS_COUNT_OFFSET: usize = 8;
+const FVAR_AXIS_SIZE_OFFSET: usize = 10;
+const FVAR_AXES_ARRAY_OFFSET: usize = 4;
+const FVAR_AXIS_RECORD_TAG: usize = 0;
+const FVAR_AXIS_RECORD_MIN: usize = 4;
+const FVAR_AXIS_RECORD_DEFAULT: usize = 8;
+const FVAR_AXIS_RECORD_MAX: usize = 12;
+const FIXED_16_16_DIVISOR: f32 = 65536.0;
+
+pub struct VariationAxis {
+    pub tag: [u8; 4],
+    pub min: f32,
+    pub default: f32,
+    pub max: f32,
+}
+
 pub struct Point {
     pub x: i16,
     pub y: i16,
@@ -65,10 +90,11 @@ pub struct Contour {
 }
 
 #[derive(Clone, Copy)]
-struct Table {
-    offset: usize,
+pub(crate) struct Table {
+    pub(crate) offset: usize,
 }
 
+#[derive(Clone)]
 pub struct Font {
     data: Vec<u8>,
     units_per_em: u16,
@@ -80,6 +106,10 @@ pub struct Font {
     glyf: Option<Table>,
     hmtx: Option<Table>,
     cmap_format4: Option<Table>,
+    cmap_format12: Option<Table>,
+    fvar: Option<Table>,
+    gsub: Option<Table>,
+    maxp_num_glyphs: u16,
     family_name: String,
 }
 
@@ -90,6 +120,31 @@ impl Font {
     }
 
     pub fn from_bytes(data: Vec<u8>) -> Result<Font, String> {
+        if data.len() < TABLE_DIRECTORY_OFFSET {
+            return Err("font data too short".into());
+        }
+        if u32_be(&data, 0) == TTC_TAG {
+            let num_fonts = u32_be(&data, 8) as usize;
+            if num_fonts == 0 {
+                return Err("empty TTC collection".into());
+            }
+            let offset = u32_be(&data, 12) as usize;
+            if offset >= data.len() {
+                return Err("TTC offset out of bounds".into());
+            }
+            return Font::from_bytes_inner(data[offset..].to_vec());
+        }
+        Font::from_bytes_inner(data)
+    }
+
+    pub(crate) fn from_bytes_at(data: &[u8], offset: usize) -> Result<Font, String> {
+        if offset >= data.len() {
+            return Err("offset out of bounds".into());
+        }
+        Font::from_bytes_inner(data[offset..].to_vec())
+    }
+
+    fn from_bytes_inner(data: Vec<u8>) -> Result<Font, String> {
         if data.len() < TABLE_DIRECTORY_OFFSET {
             return Err("font data too short".into());
         }
@@ -111,6 +166,19 @@ impl Font {
         let glyf = find_table(&data, num_tables, &TAG_GLYF);
         let hmtx = find_table(&data, num_tables, &TAG_HMTX);
         let cmap_format4 = find_cmap_format4(&data, num_tables);
+        let cmap_format12 = find_cmap_format12(&data, num_tables);
+        let fvar = find_table(&data, num_tables, &TAG_FVAR);
+        let gsub = find_table(&data, num_tables, &TAG_GSUB);
+        let maxp = find_table(&data, num_tables, &TAG_MAXP);
+        let maxp_num_glyphs = maxp
+            .and_then(|m| {
+                if m.offset + MAXP_NUM_GLYPHS_OFFSET + COORD_OFFSET <= data.len() {
+                    Some(u16_be(&data, m.offset + MAXP_NUM_GLYPHS_OFFSET))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
 
         Ok(Font {
             data,
@@ -123,6 +191,10 @@ impl Font {
             glyf,
             hmtx,
             cmap_format4,
+            cmap_format12,
+            fvar,
+            gsub,
+            maxp_num_glyphs,
             family_name,
         })
     }
@@ -154,8 +226,38 @@ impl Font {
         self.descender as f32
     }
 
+    pub(crate) fn gsub_table(&self) -> Option<Table> {
+        self.gsub
+    }
+
+    pub(crate) fn raw_data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn has_gsub(&self) -> bool {
+        self.gsub.is_some()
+    }
+
+    pub fn num_glyphs(&self) -> Option<u16> {
+        if self.maxp_num_glyphs > 0 {
+            Some(self.maxp_num_glyphs)
+        } else {
+            None
+        }
+    }
+
     pub fn glyph_index(&self, ch: char) -> Option<u16> {
-        let cp = ch as u32;
+        self.glyph_index_full(ch as u32)
+    }
+
+    pub fn glyph_index_full(&self, cp: u32) -> Option<u16> {
+        if let Some(result) = self.glyph_index_format4(cp) {
+            return Some(result);
+        }
+        self.glyph_index_format12(cp)
+    }
+
+    fn glyph_index_format4(&self, cp: u32) -> Option<u16> {
         if cp > 0xFFFF {
             return None;
         }
@@ -189,12 +291,61 @@ impl Font {
         None
     }
 
+    fn glyph_index_format12(&self, cp: u32) -> Option<u16> {
+        let cmap = self.cmap_format12?;
+        let num_groups = u32_be(&self.data, cmap.offset + CMAP12_NUM_GROUPS_OFFSET) as usize;
+        let group_base = cmap.offset + CMAP12_NUM_GROUPS_OFFSET + 4;
+        let mut lo = 0usize;
+        let mut hi = num_groups;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let group_offset = group_base + mid * CMAP12_GROUP_SIZE;
+            let start_code = u32_be(&self.data, group_offset);
+            let end_code = u32_be(&self.data, group_offset + 4);
+            let start_glyph = u32_be(&self.data, group_offset + 8);
+            if cp < start_code {
+                hi = mid;
+            } else if cp > end_code {
+                lo = mid + 1;
+            } else {
+                return Some((start_glyph + (cp - start_code)) as u16);
+            }
+        }
+        None
+    }
+
     pub fn advance_width(&self, glyph_id: u16) -> f32 {
         let Some(hmtx) = self.hmtx else {
             return 0.0;
         };
         let index = (glyph_id as usize).min(self.num_h_metrics as usize - 1);
         u16_be(&self.data, hmtx.offset + index * HMTX_ENTRY_SIZE) as f32
+    }
+
+    pub fn variation_axes(&self) -> Vec<VariationAxis> {
+        let Some(fvar) = self.fvar else {
+            return Vec::new();
+        };
+        let axis_count = u16_be(&self.data, fvar.offset + FVAR_AXIS_COUNT_OFFSET) as usize;
+        let axis_size = u16_be(&self.data, fvar.offset + FVAR_AXIS_SIZE_OFFSET) as usize;
+        let axes_offset = u16_be(&self.data, fvar.offset + FVAR_AXES_ARRAY_OFFSET) as usize;
+        let mut axes = Vec::with_capacity(axis_count);
+        for i in 0..axis_count {
+            let base = fvar.offset + axes_offset + i * axis_size;
+            let tag_bytes = &self.data[base + FVAR_AXIS_RECORD_TAG..base + FVAR_AXIS_RECORD_TAG + 4];
+            let mut tag = [0u8; 4];
+            tag.copy_from_slice(tag_bytes);
+            let min_val = fixed_to_f32(&self.data, base + FVAR_AXIS_RECORD_MIN);
+            let default_val = fixed_to_f32(&self.data, base + FVAR_AXIS_RECORD_DEFAULT);
+            let max_val = fixed_to_f32(&self.data, base + FVAR_AXIS_RECORD_MAX);
+            axes.push(VariationAxis {
+                tag,
+                min: min_val,
+                default: default_val,
+                max: max_val,
+            });
+        }
+        axes
     }
 
     pub fn glyph_outline(&self, glyph_id: u16) -> Option<Vec<Contour>> {
@@ -220,8 +371,14 @@ impl Font {
         }
         let contour_count = num_contours as usize;
         let end_pts_base = glyph_offset + END_POINTS_OFFSET + bbox_bytes;
-        let last_point = self.u16_checked(end_pts_base + (contour_count - 1) * COORD_OFFSET)?;
-        let total_points = last_point as usize + 1;
+        let mut end_pts = Vec::with_capacity(contour_count);
+        let mut max_end = 0usize;
+        for contour_index in 0..contour_count {
+            let end = self.u16_checked(end_pts_base + contour_index * COORD_OFFSET)? as usize;
+            max_end = max_end.max(end);
+            end_pts.push(end);
+        }
+        let total_points = max_end + 1;
         let instruction_length =
             self.u16_checked(end_pts_base + contour_count * COORD_OFFSET)? as usize;
         let flags_base = end_pts_base + contour_count * COORD_OFFSET + INSTRUCTION_LENGTH_OFFSET
@@ -232,9 +389,9 @@ impl Font {
         let mut contours = Vec::with_capacity(contour_count);
         let mut point_index = 0;
         for contour_index in 0..contour_count {
-            let end = self.u16_checked(end_pts_base + contour_index * COORD_OFFSET)? as usize;
+            let end = end_pts[contour_index].min(total_points - 1);
             let mut points = Vec::new();
-            while point_index <= end {
+            while point_index <= end && point_index < total_points {
                 points.push(Point {
                     x: xs[point_index],
                     y: ys[point_index],
@@ -318,29 +475,37 @@ impl Font {
 
     fn loca_offset(&self, glyph_id: u16, loca: Table) -> Option<usize> {
         if self.index_to_loc_format == 0 {
-            Some(u16_be(&self.data, loca.offset + glyph_id as usize * COORD_OFFSET) as usize * 2)
+            let offset = loca.offset + glyph_id as usize * COORD_OFFSET;
+            if offset + COORD_OFFSET > self.data.len() {
+                return None;
+            }
+            Some(u16_be(&self.data, offset) as usize * 2)
         } else {
-            Some(u32_be(&self.data, loca.offset + glyph_id as usize * 4) as usize)
+            let offset = loca.offset + glyph_id as usize * 4;
+            if offset + 4 > self.data.len() {
+                return None;
+            }
+            Some(u32_be(&self.data, offset) as usize)
         }
     }
 }
 
-fn u16_be(data: &[u8], offset: usize) -> u16 {
+pub(crate) fn u16_be(data: &[u8], offset: usize) -> u16 {
     ((data[offset] as u16) << 8) | data[offset + 1] as u16
 }
 
-fn i16_be(data: &[u8], offset: usize) -> i16 {
+pub(crate) fn i16_be(data: &[u8], offset: usize) -> i16 {
     u16_be(data, offset) as i16
 }
 
-fn u32_be(data: &[u8], offset: usize) -> u32 {
+pub(crate) fn u32_be(data: &[u8], offset: usize) -> u32 {
     ((data[offset] as u32) << 24)
         | ((data[offset + 1] as u32) << 16)
         | ((data[offset + 2] as u32) << 8)
         | data[offset + 3] as u32
 }
 
-fn find_table(data: &[u8], num_tables: usize, tag: &[u8; 4]) -> Option<Table> {
+pub(crate) fn find_table(data: &[u8], num_tables: usize, tag: &[u8; 4]) -> Option<Table> {
     for index in 0..num_tables {
         let entry = TABLE_DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_SIZE;
         if entry + DIRECTORY_ENTRY_SIZE > data.len() {
@@ -353,6 +518,10 @@ fn find_table(data: &[u8], num_tables: usize, tag: &[u8; 4]) -> Option<Table> {
         }
     }
     None
+}
+
+pub(crate) fn fixed_to_f32(data: &[u8], offset: usize) -> f32 {
+    (i16_be(data, offset) as i32) as f32 + (u16_be(data, offset + 2) as f32) / FIXED_16_16_DIVISOR
 }
 
 fn find_cmap_format4(data: &[u8], num_tables: usize) -> Option<Table> {
@@ -378,6 +547,37 @@ fn find_cmap_format4(data: &[u8], num_tables: usize) -> Option<Table> {
         let offset = u32_be(data, record + 4) as usize;
         let subtable = cmap.offset + offset;
         if u16_be(data, subtable + CMAP_FORMAT_OFFSET) == CMAP_FORMAT4 {
+            return Some(Table {
+                offset: subtable,
+            });
+        }
+    }
+    None
+}
+
+fn find_cmap_format12(data: &[u8], num_tables: usize) -> Option<Table> {
+    let cmap = find_table(data, num_tables, &TAG_CMAP)?;
+    let num_subtables = u16_be(data, cmap.offset + CMAP_NUM_SUBTABLES_OFFSET) as usize;
+    for index in 0..num_subtables {
+        let record = cmap.offset + CMAP_SUBTABLE_OFFSET + index * CMAP_RECORD_SIZE;
+        let platform = u16_be(data, record);
+        let encoding = u16_be(data, record + 2);
+        let offset = u32_be(data, record + 4) as usize;
+        let subtable = cmap.offset + offset;
+        if platform == CMAP_WINDOWS_PLATFORM
+            && encoding == CMAP_UNICODE_FULL_ENCODING
+            && u16_be(data, subtable + CMAP_FORMAT_OFFSET) == CMAP_FORMAT12
+        {
+            return Some(Table {
+                offset: subtable,
+            });
+        }
+    }
+    for index in 0..num_subtables {
+        let record = cmap.offset + CMAP_SUBTABLE_OFFSET + index * CMAP_RECORD_SIZE;
+        let offset = u32_be(data, record + 4) as usize;
+        let subtable = cmap.offset + offset;
+        if u16_be(data, subtable + CMAP_FORMAT_OFFSET) == CMAP_FORMAT12 {
             return Some(Table {
                 offset: subtable,
             });

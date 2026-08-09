@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::render_font::Font;
+use super::render_font_ttc::FontCollection;
 
 const ENV_FONT_FAMILY: &str = "RIDE_FONT_FAMILY";
 const FONT_EXTENSIONS: [&str; 2] = ["ttf", "otf"];
@@ -22,6 +23,28 @@ pub fn load_system_font() -> Option<Font> {
 
 pub fn load_system_font_or_embedded() -> Font {
     load_system_font().unwrap_or_else(Font::embedded)
+}
+
+pub fn load_cjk_font() -> Option<Font> {
+    if let Ok(path) = std::env::var("RIDE_CJK_FONT") {
+        let path = Path::new(&path);
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if ext.eq_ignore_ascii_case("ttc") {
+                if let Ok(collection) = FontCollection::from_path(path) {
+                    return collection.into_first_face();
+                }
+            }
+        }
+        if let Ok(font) = Font::from_path(path) {
+            return Some(font);
+        }
+    }
+    for directory in font_directories() {
+        if let Some(font) = scan_cjk_dir(&directory) {
+            return Some(font);
+        }
+    }
+    None
 }
 
 fn font_directories() -> Vec<PathBuf> {
@@ -64,4 +87,42 @@ fn matches_family(path: &Path, family: &str) -> bool {
     Font::peek_family(path)
         .map(|name| name.eq_ignore_ascii_case(family))
         .unwrap_or(false)
+}
+
+fn is_cjk_filename(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("notosanscjk")
+        || lower.contains("sourcehansans")
+        || lower.contains("wenquanyi")
+        || lower.starts_with("wqy")
+        || lower.contains("cjk")
+}
+
+fn scan_cjk_dir(directory: &Path) -> Option<Font> {
+    let entries = fs::read_dir(directory).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(font) = scan_cjk_dir(&path) {
+                return Some(font);
+            }
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_cjk_filename(name) {
+            continue;
+        }
+        if name.to_lowercase().ends_with(".ttc") {
+            if let Ok(collection) = FontCollection::from_path(&path) {
+                return collection.into_first_face();
+            }
+        } else if has_font_extension(&path) {
+            if let Ok(font) = Font::from_path(&path) {
+                return Some(font);
+            }
+        }
+    }
+    None
 }

@@ -50,12 +50,14 @@ impl RenderLoop {
         })
     }
 
-    pub fn run<F>(self, frame_fn: F) -> Result<(), winit::error::EventLoopError>
+    pub fn run<F, E>(self, frame_fn: F, event_handler: E) -> Result<(), winit::error::EventLoopError>
     where
         F: FnMut(&mut FrameResources) + 'static,
+        E: FnMut(&WindowEvent) + 'static,
     {
         let mut app = RenderApp {
             frame_fn,
+            event_handler,
             instance_context: None,
             window: None,
             surface_context: None,
@@ -67,8 +69,9 @@ impl RenderLoop {
     }
 }
 
-struct RenderApp<F> {
+struct RenderApp<F, E> {
     frame_fn: F,
+    event_handler: E,
     instance_context: Option<InstanceContext>,
     window: Option<Arc<Window>>,
     surface_context: Option<SurfaceContext>,
@@ -77,9 +80,10 @@ struct RenderApp<F> {
     swapchain_needs_recreate: bool,
 }
 
-impl<F> ApplicationHandler for RenderApp<F>
+impl<F, E> ApplicationHandler for RenderApp<F, E>
 where
     F: FnMut(&mut FrameResources) + 'static,
+    E: FnMut(&WindowEvent) + 'static,
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.instance_context.is_some() {
@@ -102,6 +106,7 @@ where
         if owned_window_id != Some(window_id) {
             return;
         }
+        (self.event_handler)(&event);
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -123,9 +128,10 @@ where
     }
 }
 
-impl<F> RenderApp<F>
+impl<F, E> RenderApp<F, E>
 where
     F: FnMut(&mut FrameResources) + 'static,
+    E: FnMut(&WindowEvent) + 'static,
 {
     fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn std::error::Error>> {
         let instance_context = InstanceContext::new(event_loop)?;

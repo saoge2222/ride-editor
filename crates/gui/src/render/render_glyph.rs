@@ -12,13 +12,13 @@ use super::render_texture::Texture;
 const ATLAS_SIZE: u32 = 512;
 const SUPERSAMPLE: u32 = 4;
 const PADDING: u32 = 2;
+const MAX_GLYPH_SIZE: u32 = 256;
 const RGBA_CHANNELS: usize = 4;
 const COVERAGE_DIVISOR: u32 = SUPERSAMPLE * SUPERSAMPLE;
 const WHITE: u8 = 255;
 const QUAD_STEPS: u32 = 12;
 const FIRST_ASCII: u32 = 32;
 const LAST_ASCII: u32 = 126;
-const UNKNOWN_GLYPH: char = '?';
 const ZERO: f32 = 0.0;
 
 pub struct GlyphPlacement {
@@ -33,7 +33,17 @@ pub struct GlyphPlacement {
 pub struct GlyphAtlas {
     pub texture: Texture,
     pub sampler: Arc<Sampler>,
-    glyphs: HashMap<char, GlyphPlacement>,
+    pixels: Vec<u8>,
+    glyphs: HashMap<(usize, u16), GlyphPlacement>,
+    cursor_x: u32,
+    cursor_y: u32,
+    row_height: u32,
+    pixel_size: u32,
+    dirty: bool,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    allocator: Arc<StandardMemoryAllocator>,
+    command_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
 impl GlyphAtlas {
@@ -41,22 +51,71 @@ impl GlyphAtlas {
         device: Arc<Device>,
         queue: Arc<Queue>,
         allocator: Arc<StandardMemoryAllocator>,
-        command_allocator: &Arc<StandardCommandBufferAllocator>,
+        command_allocator: Arc<StandardCommandBufferAllocator>,
         font: &Font,
         pixel_size: u32,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (buffer, placements) = build_atlas(font, pixel_size);
+        let atlas_pixels = ATLAS_SIZE as usize * ATLAS_SIZE as usize * RGBA_CHANNELS;
+        let mut pixels = vec![0u8; atlas_pixels];
+        let mut glyphs = HashMap::new();
+        let mut cursor_x = 0u32;
+        let mut cursor_y = 0u32;
+        let mut row_height = 0u32;
+
+        for code in FIRST_ASCII..=LAST_ASCII {
+            let ch = char::from_u32(code).expect("ascii code point");
+            if ch.is_whitespace() {
+                continue;
+            }
+            let Some(glyph_id) = font.glyph_index_full(code) else {
+                continue;
+            };
+            let Some(bitmap) = rasterize_glyph_for_glyph_id(font, glyph_id, pixel_size) else {
+                continue;
+            };
+            let (width, height) = (bitmap.width, bitmap.height);
+            if width > 0 && height > 0 {
+                if cursor_x + width + PADDING > ATLAS_SIZE {
+                    cursor_x = 0;
+                    cursor_y += row_height + PADDING;
+                    row_height = 0;
+                }
+                if cursor_y + height > ATLAS_SIZE {
+                    break;
+                }
+                copy_bitmap_into(&mut pixels, &bitmap.pixels, cursor_x, cursor_y, width, height);
+                glyphs.insert(
+                    (0, glyph_id),
+                    GlyphPlacement {
+                        uv: [
+                            cursor_x as f32 / ATLAS_SIZE as f32,
+                            cursor_y as f32 / ATLAS_SIZE as f32,
+                            (cursor_x + width) as f32 / ATLAS_SIZE as f32,
+                            (cursor_y + height) as f32 / ATLAS_SIZE as f32,
+                        ],
+                        advance_px: bitmap.advance_px,
+                        left_px: bitmap.left_px,
+                        top_px: bitmap.top_px,
+                        width_px: width,
+                        height_px: height,
+                    },
+                );
+                cursor_x += width + PADDING;
+                row_height = row_height.max(height);
+            }
+        }
+
         let texture = Texture::from_rgba(
             device.clone(),
-            queue,
-            allocator,
-            command_allocator,
+            queue.clone(),
+            allocator.clone(),
+            &command_allocator,
             ATLAS_SIZE,
             ATLAS_SIZE,
-            &buffer,
+            &pixels,
         )?;
         let sampler = Sampler::new(
-            device,
+            device.clone(),
             SamplerCreateInfo {
                 mag_filter: Filter::Linear,
                 min_filter: Filter::Linear,
@@ -66,14 +125,103 @@ impl GlyphAtlas {
         Ok(Self {
             texture,
             sampler,
-            glyphs: placements.into_iter().collect(),
+            pixels,
+            glyphs,
+            cursor_x,
+            cursor_y,
+            row_height,
+            pixel_size,
+            dirty: false,
+            device,
+            queue,
+            allocator,
+            command_allocator,
         })
     }
 
-    pub fn glyph(&self, ch: char) -> Option<&GlyphPlacement> {
-        self.glyphs
-            .get(&ch)
-            .or_else(|| self.glyphs.get(&UNKNOWN_GLYPH))
+    pub fn glyph(&self, font_index: usize, glyph_id: u16) -> Option<&GlyphPlacement> {
+        self.glyphs.get(&(font_index, glyph_id))
+    }
+
+    pub fn ensure_glyph(&mut self, font_index: usize, glyph_id: u16, font: &Font) -> bool {
+        if self.glyphs.contains_key(&(font_index, glyph_id)) {
+            return false;
+        }
+        let Some(bitmap) = rasterize_glyph_for_glyph_id(font, glyph_id, self.pixel_size) else {
+            return false;
+        };
+        let (width, height) = (bitmap.width, bitmap.height);
+        if width > 0 && height > 0 {
+            if self.cursor_x + width + PADDING > ATLAS_SIZE {
+                self.cursor_x = 0;
+                self.cursor_y += self.row_height + PADDING;
+                self.row_height = 0;
+            }
+            if self.cursor_y + height > ATLAS_SIZE {
+                return false;
+            }
+            copy_bitmap_into(
+                &mut self.pixels,
+                &bitmap.pixels,
+                self.cursor_x,
+                self.cursor_y,
+                width,
+                height,
+            );
+            self.glyphs.insert(
+                (font_index, glyph_id),
+                GlyphPlacement {
+                    uv: [
+                        self.cursor_x as f32 / ATLAS_SIZE as f32,
+                        self.cursor_y as f32 / ATLAS_SIZE as f32,
+                        (self.cursor_x + width) as f32 / ATLAS_SIZE as f32,
+                        (self.cursor_y + height) as f32 / ATLAS_SIZE as f32,
+                    ],
+                    advance_px: bitmap.advance_px,
+                    left_px: bitmap.left_px,
+                    top_px: bitmap.top_px,
+                    width_px: width,
+                    height_px: height,
+                },
+            );
+            self.cursor_x += width + PADDING;
+            self.row_height = self.row_height.max(height);
+        }
+        self.dirty = true;
+        true
+    }
+
+    pub fn pixel_size(&self) -> u32 {
+        self.pixel_size
+    }
+
+    pub fn commit_if_dirty(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.dirty {
+            return Ok(());
+        }
+        let texture = Texture::from_rgba(
+            self.device.clone(),
+            self.queue.clone(),
+            self.allocator.clone(),
+            &self.command_allocator,
+            ATLAS_SIZE,
+            ATLAS_SIZE,
+            &self.pixels,
+        )?;
+        let sampler = Sampler::new(
+            self.device.clone(),
+            SamplerCreateInfo {
+                mag_filter: Filter::Linear,
+                min_filter: Filter::Linear,
+                ..Default::default()
+            },
+        )?;
+        self.texture = texture;
+        self.sampler = sampler;
+        self.dirty = false;
+        Ok(())
     }
 }
 
@@ -84,63 +232,6 @@ struct GlyphBitmap {
     left_px: f32,
     top_px: f32,
     advance_px: f32,
-}
-
-fn build_atlas(font: &Font, pixel_size: u32) -> (Vec<u8>, Vec<(char, GlyphPlacement)>) {
-    let mut buffer = vec![0u8; ATLAS_SIZE as usize * ATLAS_SIZE as usize * RGBA_CHANNELS];
-    let mut placements = Vec::new();
-    let mut cursor_x = 0u32;
-    let mut cursor_y = 0u32;
-    let mut row_height = 0u32;
-    for code in FIRST_ASCII..=LAST_ASCII {
-        let ch = char::from_u32(code).expect("ascii code point");
-        let Some(bitmap) = rasterize_glyph(font, ch, pixel_size) else {
-            continue;
-        };
-        let (width, height) = (bitmap.width, bitmap.height);
-        if width > 0 && height > 0 {
-            if cursor_x + width + PADDING > ATLAS_SIZE {
-                cursor_x = 0;
-                cursor_y += row_height + PADDING;
-                row_height = 0;
-            }
-            if cursor_y + height > ATLAS_SIZE {
-                break;
-            }
-            copy_bitmap_into(&mut buffer, &bitmap.pixels, cursor_x, cursor_y, width, height);
-            placements.push((
-                ch,
-                GlyphPlacement {
-                    uv: [
-                        cursor_x as f32 / ATLAS_SIZE as f32,
-                        cursor_y as f32 / ATLAS_SIZE as f32,
-                        (cursor_x + width) as f32 / ATLAS_SIZE as f32,
-                        (cursor_y + height) as f32 / ATLAS_SIZE as f32,
-                    ],
-                    advance_px: bitmap.advance_px,
-                    left_px: bitmap.left_px,
-                    top_px: bitmap.top_px,
-                    width_px: width,
-                    height_px: height,
-                },
-            ));
-            cursor_x += width + PADDING;
-            row_height = row_height.max(height);
-        } else {
-            placements.push((
-                ch,
-                GlyphPlacement {
-                    uv: [ZERO, ZERO, ZERO, ZERO],
-                    advance_px: bitmap.advance_px,
-                    left_px: ZERO,
-                    top_px: ZERO,
-                    width_px: 0,
-                    height_px: 0,
-                },
-            ));
-        }
-    }
-    (buffer, placements)
 }
 
 fn copy_bitmap_into(
@@ -161,39 +252,53 @@ fn copy_bitmap_into(
     }
 }
 
-fn rasterize_glyph(font: &Font, ch: char, pixel_size: u32) -> Option<GlyphBitmap> {
-    let glyph_id = font.glyph_index(ch)?;
+fn rasterize_glyph_for_glyph_id(font: &Font, glyph_id: u16, pixel_size: u32) -> Option<GlyphBitmap> {
     let scale = pixel_size as f32 / font.units_per_em();
     let advance_px = font.advance_width(glyph_id) * scale;
-    if ch.is_whitespace() {
-        return Some(empty_bitmap(advance_px));
+    match font.glyph_outline(glyph_id) {
+        Some(contours) => rasterize_outline(contours, scale, advance_px, glyph_id),
+        None => Some(GlyphBitmap {
+            pixels: Vec::new(),
+            width: 0,
+            height: 0,
+            left_px: ZERO,
+            top_px: ZERO,
+            advance_px,
+        }),
     }
+}
 
+fn rasterize_outline(contours: Vec<Contour>, scale: f32, advance_px: f32, _glyph_id: u16) -> Option<GlyphBitmap> {
     let mut polygons = Vec::new();
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
     let mut max_y = f32::MIN;
 
-    if let Some(contours) = font.glyph_outline(glyph_id) {
-        for contour in contours {
-            let mut polygon = Vec::new();
-            flatten_contour(&contour, scale, &mut polygon);
-            if polygon.is_empty() {
-                continue;
-            }
-            for point in &polygon {
-                min_x = min_x.min(point[0]);
-                max_x = max_x.max(point[0]);
-                min_y = min_y.min(point[1]);
-                max_y = max_y.max(point[1]);
-            }
-            polygons.push(polygon);
+    for contour in contours {
+        let mut polygon = Vec::new();
+        flatten_contour(&contour, scale, &mut polygon);
+        if polygon.is_empty() {
+            continue;
         }
+        for point in &polygon {
+            min_x = min_x.min(point[0]);
+            max_x = max_x.max(point[0]);
+            min_y = min_y.min(point[1]);
+            max_y = max_y.max(point[1]);
+        }
+        polygons.push(polygon);
     }
 
     if polygons.is_empty() {
-        return Some(empty_bitmap(advance_px));
+        return Some(GlyphBitmap {
+            pixels: Vec::new(),
+            width: 0,
+            height: 0,
+            left_px: ZERO,
+            top_px: ZERO,
+            advance_px,
+        });
     }
 
     let min_x_i = min_x.floor() as i32;
@@ -202,8 +307,25 @@ fn rasterize_glyph(font: &Font, ch: char, pixel_size: u32) -> Option<GlyphBitmap
     let max_y_i = max_y.ceil() as i32;
     let width = (max_x_i - min_x_i) as u32;
     let height = (max_y_i - min_y_i) as u32;
+    if width > MAX_GLYPH_SIZE || height > MAX_GLYPH_SIZE {
+        return Some(GlyphBitmap {
+            pixels: Vec::new(),
+            width: 0,
+            height: 0,
+            left_px: ZERO,
+            top_px: ZERO,
+            advance_px,
+        });
+    }
     if width == 0 || height == 0 {
-        return Some(empty_bitmap(advance_px));
+        return Some(GlyphBitmap {
+            pixels: Vec::new(),
+            width: 0,
+            height: 0,
+            left_px: ZERO,
+            top_px: ZERO,
+            advance_px,
+        });
     }
 
     let mut pixels = vec![0u8; width as usize * height as usize * RGBA_CHANNELS];
@@ -239,17 +361,6 @@ fn rasterize_glyph(font: &Font, ch: char, pixel_size: u32) -> Option<GlyphBitmap
         top_px: max_y_i as f32,
         advance_px,
     })
-}
-
-fn empty_bitmap(advance_px: f32) -> GlyphBitmap {
-    GlyphBitmap {
-        pixels: Vec::new(),
-        width: 0,
-        height: 0,
-        left_px: ZERO,
-        top_px: ZERO,
-        advance_px,
-    }
 }
 
 fn flatten_contour(contour: &Contour, scale: f32, output: &mut Vec<[f32; 2]>) {
@@ -341,12 +452,13 @@ fn point_inside(polygons: &[Vec<[f32; 2]>], x: f32, y: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{rasterize_glyph, Font};
+    use super::{rasterize_glyph_for_glyph_id, Font};
 
     #[test]
     fn rasterizes_letter_a() {
         let font = Font::embedded();
-        let bitmap = rasterize_glyph(&font, 'A', 20).expect("glyph A rasterizes");
+        let glyph_id = font.glyph_index('A').expect("glyph A exists");
+        let bitmap = rasterize_glyph_for_glyph_id(&font, glyph_id, 20).expect("glyph A rasterizes");
         assert!(bitmap.width > 0);
         assert!(bitmap.height > 0);
         assert!(bitmap.advance_px > 0.0);
@@ -354,11 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn rasterizes_space_as_empty() {
+    fn rasterizes_missing_glyph_as_empty() {
         let font = Font::embedded();
-        let bitmap = rasterize_glyph(&font, ' ', 20).expect("glyph space handles empty");
+        let bitmap = rasterize_glyph_for_glyph_id(&font, 0xFFFF, 20).expect("missing glyph handled");
         assert_eq!(bitmap.width, 0);
         assert_eq!(bitmap.height, 0);
-        assert!(bitmap.advance_px > 0.0);
     }
 }
