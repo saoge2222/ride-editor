@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 
 use ride_editor::{FullState, Request, Response};
 
-// TODO: Re-enable once the Vulkan GUI (crates/gui-workbench) calls these APIs.
+// TODO: Re-enable once the Zed GPUI GUI (crates/gui/gui-workbench) calls these APIs.
 /*
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -93,7 +93,7 @@ impl FileMngClient {
         &self.current_dir
     }
 
-    // TODO: Re-enable these once the Vulkan GUI (crates/gui-workbench) wires up.
+    // TODO: Re-enable these once the Zed GPUI GUI (crates/gui/gui-workbench) wires up.
     /*
     pub fn entries(&self) -> &[FileEntry] {
         &self.entries

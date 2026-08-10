@@ -9,9 +9,9 @@
 ## Project
 
 - **Package**: `ride-editor` (Rust edition 2024)
-- **Purpose**: Vim-keybinding GUI text editor using Vulkan-based rendering
-- **Entrypoint**: `crates/ride-editor/main.rs` — initializes Vulkan window and rendering pipeline
-- **GUI frontend**: `crates/gui-workbench/` — new Vulkan-based GUI (contains `fonts/`)
+- **Purpose**: Vim-keybinding GUI text editor using Zed GPUI-based rendering
+- **Entrypoint**: `crates/ride-editor/main.rs` — initializes GPUI window and rendering pipeline
+- **GUI frontend**: `crates/gui/gui-workbench/` — new Zed GPUI-based GUI (contains `fonts/`)
 
 ## Build & Run
 
@@ -26,44 +26,18 @@ There is no separate lint, format, or test command configured.
 
 ## Dependencies
 
-### Vulkan SDK
-
-#### Debian/Ubuntu
-
-```bash
-sudo apt install vulkan-tools libvulkan-dev vulkan-validationlayers-dev
-```
-
-#### Fedora
-
-```bash
-sudo dnf install vulkan-tools vulkan-loader-devel vulkan-validation-layers-devel
-```
-
-#### Arch
-
-```bash
-sudo pacman -S vulkan-tools vulkan-validation-layers
-```
-
-Verify installation:
-
-```bash
-vulkaninfo | head -20
-```
-
-### Vulkano (Rust Vulkan bindings)
+### Zed GPUI
 
 Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-vulkano = "0.34"
-vulkano-shaders = "0.34"
-winit = "0.29"
+gpui = "0.2"
 ```
 
-Vulkano requires the Vulkan SDK (see above) to be installed before building.
+The toolchain is pinned via `rust-toolchain.toml` (nightly). On Linux GPUI
+uses Wayland/X11 (default features); install the X11/Wayland and xkbcommon
+development libraries before building.
 
 ## Code Conventions
 
@@ -96,7 +70,7 @@ Do **not** modify or read as project source:
 - Never commit: `/.vscode`, `/project_docs`, `/target`, `**/temp/`
 - **Commit prefix tags**:
   - `feat-backend:` — Rust source changes
-  - `feat-frontend:` — Vulkan GUI changes
+  - `feat-frontend:` — Zed GPUI GUI changes
   - `fix:` — bug fixes
   - `buildcfg:` — Cargo.toml / build.rs changes
   - `chores:` — docs, README, .gitignore
