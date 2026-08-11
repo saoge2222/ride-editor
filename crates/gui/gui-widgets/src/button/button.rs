@@ -10,8 +10,8 @@ const DEFAULT_BORDER_WIDTH: Pixels = px(1.);
 
 #[derive(Clone, Debug)]
 pub struct ButtonStyles {
-    pub width: Pixels,
-    pub height: Pixels,
+    pub width: Option<Pixels>,
+    pub height: Option<Pixels>,
     pub border_color: Option<Hsla>,
     pub fill_color: Option<Hsla>,
     pub text: Option<SharedString>,
@@ -26,8 +26,8 @@ pub struct ButtonStyles {
 impl ButtonStyles {
     pub fn new(width: Pixels, height: Pixels) -> Self {
         Self {
-            width,
-            height,
+            width: Some(width),
+            height: Some(height),
             border_color: None,
             fill_color: None,
             text: None,
@@ -74,6 +74,11 @@ impl ButtonStyles {
         self.icon_path = Some(path.into());
         self.icon_width = width;
         self.icon_height = height;
+        self
+    }
+
+    pub fn auto_width(mut self) -> Self {
+        self.width = None;
         self
     }
 }
@@ -150,12 +155,17 @@ impl Render for Button {
 
         let mut element = div()
             .id(ElementId::Name(self.id.clone()))
-            .w(s.width)
-            .h(s.height)
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer();
+
+        if let Some(width) = s.width {
+            element = element.w(width);
+        }
+        if let Some(height) = s.height {
+            element = element.h(height);
+        }
 
         if let Some(color) = s.border_color {
             element = element.border_color(color).border(DEFAULT_BORDER_WIDTH);
