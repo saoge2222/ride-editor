@@ -1,8 +1,7 @@
 /.vscode/
 /project_docs
-
+**/dev-utils
 # Added by cargo
-
 /target
 **/target/
 **/temp/
