@@ -1,13 +1,15 @@
 use gpui::{
     App, AppContext, Context, ElementId, Entity, EntityId, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, px,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, TextRun, Window, div, font,
+    px, relative,
 };
 
 const DEFAULT_BORDER_WIDTH: Pixels = px(1.);
 const DEFAULT_TEXT_SIZE: Pixels = px(14.);
 const DEFAULT_TITLE_SIZE: Pixels = px(12.);
 const DEFAULT_LINE_COUNT: usize = 1;
+const DEFAULT_WRAP: bool = true;
 const LINE_HEIGHT_MULTIPLIER: f32 = 1.5;
 const TEXT_PADDING_X: Pixels = px(8.);
 const CARET_WIDTH: Pixels = px(2.);
@@ -86,6 +88,7 @@ pub struct TextboxStyles {
     pub caret_color: Hsla,
     pub placeholder_color: Hsla,
     pub line_count: usize,
+    pub wrap: bool,
     pub placeholder: Option<Placeholder>,
 }
 
@@ -113,6 +116,7 @@ impl TextboxStyles {
             caret_color: caret_color.into(),
             placeholder_color: placeholder_color.into(),
             line_count: DEFAULT_LINE_COUNT,
+            wrap: DEFAULT_WRAP,
             placeholder: None,
         }
     }
@@ -164,6 +168,11 @@ impl TextboxStyles {
 
     pub fn line_count(mut self, count: usize) -> Self {
         self.line_count = count;
+        self
+    }
+
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
         self
     }
 
@@ -225,6 +234,7 @@ pub struct Textbox {
     hovered: bool,
     focused: bool,
     prev_has_text: bool,
+    scroll: ScrollHandle,
     entity_id: EntityId,
     focus_handle: FocusHandle,
     focus_events_registered: bool,
@@ -244,6 +254,7 @@ impl Textbox {
             hovered: false,
             focused: false,
             prev_has_text: false,
+            scroll: ScrollHandle::new(),
             entity_id: cx.entity_id(),
             focus_handle: cx.focus_handle(),
             focus_events_registered: false,
@@ -340,6 +351,14 @@ impl Textbox {
 
     fn handle_key(&mut self, key: &str, key_char: Option<&str>, window: &mut Window, cx: &mut App) {
         match key {
+            "enter" => {
+                if self.styles.line_count > 1 {
+                    let index = self.char_index_at_cursor();
+                    self.text.insert(index, '\n');
+                    self.cursor_column += 1;
+                    self.emit_text_events(window, cx);
+                }
+            }
             "backspace" => {
                 if let Some(c) = self.char_before_cursor() {
                     let index = self.char_index_at_cursor() - c.len_utf8();
@@ -365,6 +384,13 @@ impl Textbox {
             "end" => self.cursor_column = self.column_width(&self.text),
             _ => {
                 if let Some(ch) = key_char {
+                    if self.follows_scroll() {
+                        let index = self.char_index_at_cursor();
+                        if self.line_would_overflow(window, index, ch) {
+                            self.text.insert(index, '\n');
+                            self.cursor_column += 1;
+                        }
+                    }
                     let index = self.char_index_at_cursor();
                     self.text.insert_str(index, ch);
                     self.cursor_column += crate::editor::buffer::char_width_kind(
@@ -374,6 +400,87 @@ impl Textbox {
                 }
             }
         }
+        if !self.follows_scroll() {
+            self.scroll.scroll_to_item(self.caret_scroll_index());
+        }
+    }
+
+    fn follows_scroll(&self) -> bool {
+        self.styles.wrap && self.styles.line_count > 1
+    }
+
+    fn measure_text(&self, window: &mut Window, text: &str) -> (Pixels, Pixels) {
+        if text.is_empty() {
+            return (px(0.), px(0.));
+        }
+        let family = self.styles.font_family.clone().unwrap_or_default();
+        let mut max_width = px(0.);
+        let mut last_width = px(0.);
+        for line in text.split('\n') {
+            if line.is_empty() {
+                last_width = px(0.);
+                continue;
+            }
+            let line_text: SharedString = line.to_string().into();
+            let width = window
+                .text_system()
+                .shape_line(
+                    line_text,
+                    self.styles.text_size,
+                    &[TextRun {
+                        len: line.len(),
+                        font: font(family.clone()),
+                        color: self.styles.text_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width;
+            max_width = max_width.max(width);
+            last_width = width;
+        }
+        (max_width, last_width)
+    }
+
+    fn caret_scroll_index(&self) -> usize {
+        if self.styles.line_count > 1 {
+            2
+        } else {
+            1
+        }
+    }
+
+    fn line_would_overflow(&self, window: &mut Window, cursor_index: usize, ch: &str) -> bool {
+        let line_start = self.text[..cursor_index]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let mut candidate = String::with_capacity(cursor_index - line_start + ch.len());
+        candidate.push_str(&self.text[line_start..cursor_index]);
+        candidate.push_str(ch);
+        let family = self.styles.font_family.clone().unwrap_or_default();
+        let line_width = window
+            .text_system()
+            .shape_line(
+                candidate.clone().into(),
+                self.styles.text_size,
+                &[TextRun {
+                    len: candidate.len(),
+                    font: font(family),
+                    color: self.styles.text_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width;
+        let available = f32::from(self.styles.width)
+            - 2. * f32::from(self.styles.border_width)
+            - 2. * f32::from(TEXT_PADDING_X);
+        f32::from(line_width) > available
     }
 }
 
@@ -415,8 +522,8 @@ impl Render for Textbox {
             .top(px(0.))
             .bottom(px(0.))
             .flex()
-            .items_center()
             .px(TEXT_PADDING_X)
+            .overflow_y_hidden()
             .cursor_text()
             .id(ElementId::Name(content_id.into()))
             .focusable()
@@ -443,6 +550,11 @@ impl Render for Textbox {
                     cx.notify();
                 },
             ));
+        if styles.line_count > 1 {
+            content = content.flex_col().items_start().justify_center();
+        } else {
+            content = content.items_center();
+        }
 
         if let Some(color) = styles.border_color {
             content = content.border_color(color).border(styles.border_width);
@@ -476,33 +588,76 @@ impl Render for Textbox {
             let before_text: SharedString = self.text[..before].to_string().into();
             let after_text: SharedString = self.text[after..].to_string().into();
             let caret_height = px(f32::from(styles.text_size) * LINE_HEIGHT_MULTIPLIER);
-            let mut text_row = div().flex().items_center();
-            if !before_text.is_empty() {
-                let mut before_div = div()
-                    .child(before_text.clone())
-                    .text_size(styles.text_size)
-                    .text_color(styles.text_color);
-                if let Some(family) = &styles.font_family {
-                    before_div = before_div.font_family(family.clone());
-                }
-                text_row = text_row.child(before_div);
+            let (before_max, before_last) = self.measure_text(window, &before_text);
+            let (after_max, _) = self.measure_text(window, &after_text);
+            let before_width = if before_text.is_empty() {
+                px(0.)
+            } else {
+                px(f32::from(before_max).ceil() + 1.)
+            };
+            let after_width = if after_text.is_empty() {
+                px(0.)
+            } else {
+                px(f32::from(after_max).ceil() + 1.)
+            };
+            let mut scroll_box = div()
+                .id(ElementId::Name(format!("{}-text-scroll", self.id).into()))
+                .w(relative(1.0))
+                .flex()
+                .overflow_x_scroll()
+                .track_scroll(&self.scroll);
+            if styles.line_count > 1 {
+                scroll_box = scroll_box.flex_col().items_start().relative();
+            } else {
+                scroll_box = scroll_box.flex_row().items_center();
+            }
+            let mut before_div = div()
+                .id(ElementId::Name(format!("{}-before", self.id).into()))
+                .w(before_width)
+                .flex_shrink_0()
+                .text_size(styles.text_size)
+                .text_color(styles.text_color)
+                .child(before_text.clone());
+            if let Some(family) = &styles.font_family {
+                before_div = before_div.font_family(family.clone());
+            }
+            scroll_box = scroll_box.child(before_div);
+            let mut after_div = div()
+                .id(ElementId::Name(format!("{}-after", self.id).into()))
+                .w(after_width)
+                .flex_shrink_0()
+                .text_size(styles.text_size)
+                .text_color(styles.text_color)
+                .child(after_text.clone());
+            if styles.line_count > 1 && !before_text.is_empty() {
+                after_div = after_div.mt(-caret_height);
+            }
+            if let Some(family) = &styles.font_family {
+                after_div = after_div.font_family(family.clone());
+            }
+            scroll_box = scroll_box.child(after_div);
+            let mut caret_div = div()
+                .id(ElementId::Name(format!("{}-caret", self.id).into()))
+                .w(CARET_WIDTH)
+                .h(caret_height)
+                .flex_shrink_0();
+            if styles.line_count > 1 {
+                let caret_x = if before_text.is_empty() {
+                    px(0.)
+                } else {
+                    px(f32::from(before_last).ceil())
+                };
+                let line_ix = before_text.split('\n').count() as f32 - 1.;
+                caret_div = caret_div
+                    .absolute()
+                    .left(caret_x)
+                    .top(px(line_ix * f32::from(caret_height)));
             }
             if self.focused {
-                text_row = text_row.child(
-                    div().w(CARET_WIDTH).h(caret_height).bg(styles.caret_color),
-                );
+                caret_div = caret_div.bg(styles.caret_color);
             }
-            if !after_text.is_empty() {
-                let mut after_div = div()
-                    .child(after_text.clone())
-                    .text_size(styles.text_size)
-                    .text_color(styles.text_color);
-                if let Some(family) = &styles.font_family {
-                    after_div = after_div.font_family(family.clone());
-                }
-                text_row = text_row.child(after_div);
-            }
-            content = content.child(text_row);
+            scroll_box = scroll_box.child(caret_div);
+            content = content.child(scroll_box);
         }
 
         let mut root = div().relative().w(styles.width).h(styles.height);
@@ -550,6 +705,9 @@ impl Render for Textbox {
                 }
                 root = root.child(title_div);
             }
+        }
+        if self.focused && !self.follows_scroll() && !self.text.is_empty() {
+            self.scroll.scroll_to_item(self.caret_scroll_index());
         }
         root
     }

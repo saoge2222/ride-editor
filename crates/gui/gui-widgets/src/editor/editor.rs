@@ -19,13 +19,13 @@ const DEFAULT_BREAKPOINT_COLUMN_WIDTH: Pixels = px(20.);
 const DEFAULT_GIT_MARKER_COLUMN_WIDTH: Pixels = px(4.);
 const DEFAULT_STATUS_BAR_HEIGHT: Pixels = px(24.);
 const CARET_WIDTH: Pixels = px(2.);
-const BREAKPOINT_DOT_SIZE: Pixels = px(8.);
 const GIT_MARKER_WIDTH: Pixels = px(2.);
 const WAVE_THICKNESS: Pixels = px(1.5);
 const LINE_NUMBER_PADDING_RIGHT: Pixels = px(8.);
 const STATUS_BAR_PADDING_X: Pixels = px(8.);
 const STATUS_BAR_TEXT_SIZE: Pixels = px(12.);
 const STATUS_BAR_BORDER_WIDTH: Pixels = px(1.);
+const LSP_DISCONNECTED_TEXT: &str = "LSP Disconnected";
 const TAB_TEXT: &str = "    ";
 const RGB_LINE_NUMBER: u32 = 0x64748b;
 const RGB_DIAGNOSTIC: u32 = 0xf87171;
@@ -251,6 +251,7 @@ pub struct Editor {
     git_lines: Vec<GitLineState>,
     breakpoints: Vec<Breakpoint>,
     document_symbols: Vec<DocumentSymbol>,
+    lsp_connected: bool,
     focused: bool,
     entity_id: EntityId,
     focus_handle: FocusHandle,
@@ -295,6 +296,7 @@ impl Editor {
                 git_lines: Vec::new(),
                 breakpoints: Vec::new(),
                 document_symbols: Vec::new(),
+                lsp_connected: false,
                 focused: false,
                 entity_id: cx.entity_id(),
                 focus_handle: cx.focus_handle(),
@@ -349,6 +351,11 @@ impl Editor {
 
     pub fn set_document_symbols(&mut self, symbols: Vec<DocumentSymbol>, cx: &mut App) {
         self.document_symbols = symbols;
+        cx.notify(self.entity_id);
+    }
+
+    pub fn set_lsp_connected(&mut self, connected: bool, cx: &mut App) {
+        self.lsp_connected = connected;
         cx.notify(self.entity_id);
     }
 
@@ -506,8 +513,11 @@ impl Editor {
                 }),
             );
         if has_breakpoint {
+            let dot: SharedString = "●".into();
             breakpoint_cell = breakpoint_cell
-                .child(div().w(BREAKPOINT_DOT_SIZE).h(BREAKPOINT_DOT_SIZE).bg(self.styles.breakpoint_color));
+                .text_size(self.styles.font_size)
+                .text_color(self.styles.breakpoint_color)
+                .child(dot);
         }
 
         let git_status = self
@@ -566,32 +576,34 @@ impl Editor {
             .flex()
             .h(line_height)
             .child(breakpoint_cell)
-            .child(git_cell)
             .child(number_cell)
+            .child(git_cell)
             .child(text_cell)
     }
 
     fn render_status_bar(&self) -> impl IntoElement {
-        let status_text = format!(
-            "{} | {}",
-            self.mode_name(),
+        let symbol_text = if self.lsp_connected {
             self.current_symbol().unwrap_or_else(|| "--".to_string())
-        );
+        } else {
+            LSP_DISCONNECTED_TEXT.to_string()
+        };
         div()
             .h(self.styles.status_bar_height)
             .flex()
             .flex_col()
-            .child(div().w(self.styles.width).h(STATUS_BAR_BORDER_WIDTH).bg(self.styles.status_bar_border_color))
             .child(
                 div()
                     .h(px(f32::from(self.styles.status_bar_height) - f32::from(STATUS_BAR_BORDER_WIDTH)))
                     .flex()
                     .items_center()
+                    .justify_between()
                     .px(STATUS_BAR_PADDING_X)
                     .text_size(STATUS_BAR_TEXT_SIZE)
                     .text_color(self.styles.status_bar_text_color)
-                    .child(status_text),
+                    .child(symbol_text)
+                    .child(self.mode_name()),
             )
+            .child(div().w(self.styles.width).h(STATUS_BAR_BORDER_WIDTH).bg(self.styles.status_bar_border_color))
     }
 }
 
@@ -669,8 +681,8 @@ impl Render for Editor {
         if let Some(color) = self.styles.background_color {
             root = root.bg(color);
         }
-        root = root.child(scroll_area);
         root = root.child(self.render_status_bar());
+        root = root.child(scroll_area);
         root
     }
 }

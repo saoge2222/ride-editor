@@ -3,6 +3,7 @@ use gpui::{
     Render, Result, SharedString, Styled, Window, WindowBounds, WindowOptions, div, px, relative,
     rgb, size,
 };
+use gui_widgets::button::{Button, ButtonConfig, ButtonStyles};
 use gui_widgets::data::{
     Breakpoint, DiagnosticSeverity, DocumentSymbol, GitLineState, GitStatus, LspDiagnostic,
     LspPosition, LspRange, SymbolKind, SyntaxToken, TokenKind,
@@ -95,10 +96,14 @@ fn sample_symbols() -> Vec<DocumentSymbol> {
 
 struct RootView {
     editor: Entity<Editor>,
+    lsp_button: Entity<Button>,
+    lsp_connected: bool,
 }
 
 impl RootView {
     fn new(cx: &mut Context<Self>) -> Self {
+        let weak_lsp = cx.weak_entity();
+
         let styles = EditorStyles::new(px(880.), px(560.), rgb(0xe2e8f0), rgb(0x60a5fa))
             .font_family("Maple Mono")
             .background_color(rgb(0x0f172a));
@@ -129,7 +134,33 @@ impl RootView {
             editor.set_document_symbols(sample_symbols(), cx);
         });
 
-        RootView { editor }
+        let lsp_button = Button::new(
+            ButtonConfig::new(
+                "lsp",
+                ButtonStyles::new(px(160.), px(32.))
+                    .border_color(rgb(0x3b82f6))
+                    .fill_color(rgb(0x1e293b))
+                    .text("Toggle LSP")
+                    .text_color(rgb(0xf1f5f9))
+                    .text_size(px(14.)),
+            )
+            .on_click(move |_id, _window, cx| {
+                let _ = weak_lsp.update(cx, |root, cx| {
+                    root.lsp_connected = !root.lsp_connected;
+                    root.editor.update(cx, |editor, cx| {
+                        editor.set_lsp_connected(root.lsp_connected, cx);
+                    });
+                    cx.notify();
+                });
+            }),
+            cx,
+        );
+
+        RootView {
+            editor,
+            lsp_button,
+            lsp_connected: false,
+        }
     }
 }
 
@@ -143,6 +174,7 @@ impl Render for RootView {
             .justify_center()
             .bg(rgb(0x111827))
             .child(self.editor.clone())
+            .child(div().mt(px(16.)).child(self.lsp_button.clone()))
     }
 }
 
