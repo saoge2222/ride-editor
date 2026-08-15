@@ -5,5 +5,6 @@ pub mod editor;
 pub mod highlight;
 pub mod hlist;
 pub mod list;
+pub mod pane;
 pub mod textbox;
 pub mod tree;
