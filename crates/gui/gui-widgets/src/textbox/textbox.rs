@@ -1,18 +1,22 @@
+use crate::caret::{
+    BLOCK_CARET_OPACITY, BlinkPreset, CaretShape, DEFAULT_BLINK_MS, block_width_for_char,
+    with_blink_animation,
+};
 use gpui::{
     App, AppContext, Context, ElementId, Entity, EntityId, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, TextRun, Window, div, font,
-    px, relative,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Point, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, TextRun, Window,
+    div, font, px, relative,
 };
 
 const DEFAULT_BORDER_WIDTH: Pixels = px(1.);
 const DEFAULT_TEXT_SIZE: Pixels = px(14.);
 const DEFAULT_TITLE_SIZE: Pixels = px(12.);
 const DEFAULT_LINE_COUNT: usize = 1;
-const DEFAULT_WRAP: bool = true;
 const LINE_HEIGHT_MULTIPLIER: f32 = 1.5;
 const TEXT_PADDING_X: Pixels = px(8.);
 const CARET_WIDTH: Pixels = px(2.);
+const BLOCK_CARET_FALLBACK_WIDTH: Pixels = DEFAULT_TEXT_SIZE;
 const TITLE_INSET_X: Pixels = px(12.);
 const TITLE_INSET_Y: Pixels = px(8.);
 
@@ -88,8 +92,9 @@ pub struct TextboxStyles {
     pub caret_color: Hsla,
     pub placeholder_color: Hsla,
     pub line_count: usize,
-    pub wrap: bool,
     pub placeholder: Option<Placeholder>,
+    pub caret_style: CaretShape,
+    pub caret_blink_ms: u64,
 }
 
 impl TextboxStyles {
@@ -116,8 +121,9 @@ impl TextboxStyles {
             caret_color: caret_color.into(),
             placeholder_color: placeholder_color.into(),
             line_count: DEFAULT_LINE_COUNT,
-            wrap: DEFAULT_WRAP,
             placeholder: None,
+            caret_style: CaretShape::Line,
+            caret_blink_ms: DEFAULT_BLINK_MS,
         }
     }
 
@@ -171,13 +177,18 @@ impl TextboxStyles {
         self
     }
 
-    pub fn wrap(mut self, wrap: bool) -> Self {
-        self.wrap = wrap;
+    pub fn placeholder(mut self, placeholder: Placeholder) -> Self {
+        self.placeholder = Some(placeholder);
         self
     }
 
-    pub fn placeholder(mut self, placeholder: Placeholder) -> Self {
-        self.placeholder = Some(placeholder);
+    pub fn caret_style(mut self, style: CaretShape) -> Self {
+        self.caret_style = style;
+        self
+    }
+
+    pub fn caret_blink_ms(mut self, ms: u64) -> Self {
+        self.caret_blink_ms = ms;
         self
     }
 }
@@ -350,6 +361,7 @@ impl Textbox {
     }
 
     fn handle_key(&mut self, key: &str, key_char: Option<&str>, window: &mut Window, cx: &mut App) {
+        println!("TBOX focus={} key={key} key_char={key_char:?}", self.focused);
         match key {
             "enter" => {
                 if self.styles.line_count > 1 {
@@ -400,13 +412,34 @@ impl Textbox {
                 }
             }
         }
-        if !self.follows_scroll() {
+        if self.follows_scroll() {
+            self.scroll_to_caret();
+        } else {
             self.scroll.scroll_to_item(self.caret_scroll_index());
         }
     }
 
+    fn scroll_to_caret(&self) {
+        let caret_height_px = px(f32::from(self.styles.text_size) * LINE_HEIGHT_MULTIPLIER);
+        let cursor_index = self.char_index_at_cursor();
+        let caret_top = self.text[..cursor_index].split('\n').count() as f32 - 1.0;
+        let total_lines = self.text.split('\n').count() as f32;
+        let content_height = total_lines * f32::from(caret_height_px);
+        let viewport_height =
+            f32::from(self.styles.height) - 2.0 * f32::from(self.styles.border_width);
+        let current = self.scroll.offset();
+        let y = first_visible_scroll_y(
+            caret_top * f32::from(caret_height_px),
+            f32::from(caret_height_px),
+            content_height,
+            viewport_height,
+            f32::from(current.y),
+        );
+        self.scroll.set_offset(Point::new(current.x, px(y)));
+    }
+
     fn follows_scroll(&self) -> bool {
-        self.styles.wrap && self.styles.line_count > 1
+        self.styles.line_count > 1
     }
 
     fn measure_text(&self, window: &mut Window, text: &str) -> (Pixels, Pixels) {
@@ -600,14 +633,16 @@ impl Render for Textbox {
             } else {
                 px(f32::from(after_max).ceil() + 1.)
             };
+            let inner_height = f32::from(styles.height) - 2. * f32::from(styles.border_width);
             let mut scroll_box = div()
                 .id(ElementId::Name(format!("{}-text-scroll", self.id).into()))
                 .w(relative(1.0))
+                .h(px(inner_height))
                 .flex()
                 .overflow_x_scroll()
                 .track_scroll(&self.scroll);
             if styles.line_count > 1 {
-                scroll_box = scroll_box.flex_col().items_start().relative();
+                scroll_box = scroll_box.flex_col().items_start().relative().overflow_y_scroll();
             } else {
                 scroll_box = scroll_box.flex_row().items_center();
             }
@@ -636,11 +671,26 @@ impl Render for Textbox {
                 after_div = after_div.font_family(family.clone());
             }
             scroll_box = scroll_box.child(after_div);
+            let block_caret = styles.caret_style == CaretShape::Block;
             let mut caret_div = div()
                 .id(ElementId::Name(format!("{}-caret", self.id).into()))
-                .w(CARET_WIDTH)
                 .h(caret_height)
                 .flex_shrink_0();
+            if block_caret {
+                let width = block_width_for_char(
+                    window,
+                    self.char_at_cursor(),
+                    styles.text_size,
+                    styles.font_family.clone(),
+                    BLOCK_CARET_FALLBACK_WIDTH,
+                );
+                caret_div = caret_div.w(width);
+                if styles.line_count == 1 && !after_text.is_empty() {
+                    caret_div = caret_div.ml(-width);
+                }
+            } else {
+                caret_div = caret_div.w(CARET_WIDTH);
+            }
             if styles.line_count > 1 {
                 let caret_x = if before_text.is_empty() {
                     px(0.)
@@ -653,10 +703,18 @@ impl Render for Textbox {
                     .left(caret_x)
                     .top(px(line_ix * f32::from(caret_height)));
             }
+            let mut rendered_caret = caret_div;
             if self.focused {
-                caret_div = caret_div.bg(styles.caret_color);
+                if block_caret {
+                    rendered_caret =
+                        rendered_caret.bg(styles.caret_color.opacity(BLOCK_CARET_OPACITY));
+                } else {
+                    rendered_caret = rendered_caret.bg(styles.caret_color);
+                }
+                scroll_box = scroll_box.child(rendered_caret);
+            } else {
+                scroll_box = scroll_box.child(rendered_caret);
             }
-            scroll_box = scroll_box.child(caret_div);
             content = content.child(scroll_box);
         }
 
@@ -706,9 +764,60 @@ impl Render for Textbox {
                 root = root.child(title_div);
             }
         }
-        if self.focused && !self.follows_scroll() && !self.text.is_empty() {
-            self.scroll.scroll_to_item(self.caret_scroll_index());
+        if self.focused && !self.text.is_empty() {
+            if self.follows_scroll() {
+                self.scroll_to_caret();
+            } else {
+                self.scroll.scroll_to_item(self.caret_scroll_index());
+            }
         }
         root
+    }
+}
+
+fn first_visible_scroll_y(
+    caret_top: f32,
+    caret_height: f32,
+    content_height: f32,
+    viewport_height: f32,
+    current_y: f32,
+) -> f32 {
+    let max_scroll = (content_height - viewport_height).max(0.0);
+    let mut y = current_y;
+    if caret_top + y < 0.0 {
+        y = -caret_top;
+    } else if caret_top + caret_height + y > viewport_height {
+        y = viewport_height - caret_top - caret_height;
+    }
+    y.clamp(-max_scroll, 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_visible_scroll_y;
+
+    #[test]
+    fn caret_inside_viewport_keeps_offset() {
+        assert_eq!(first_visible_scroll_y(21.0, 21.0, 210.0, 94.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn caret_below_viewport_aligns_bottom() {
+        assert_eq!(first_visible_scroll_y(92.0, 21.0, 210.0, 94.0, 0.0), -19.0);
+    }
+
+    #[test]
+    fn caret_above_viewport_aligns_top() {
+        assert_eq!(first_visible_scroll_y(42.0, 21.0, 210.0, 94.0, -63.0), -42.0);
+    }
+
+    #[test]
+    fn content_shorter_than_viewport_keeps_zero() {
+        assert_eq!(first_visible_scroll_y(63.0, 21.0, 84.0, 94.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn extreme_caret_clamped() {
+        assert_eq!(first_visible_scroll_y(420.0, 21.0, 441.0, 94.0, 0.0), -347.0);
     }
 }

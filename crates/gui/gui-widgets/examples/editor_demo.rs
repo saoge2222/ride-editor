@@ -4,6 +4,7 @@ use gpui::{
     rgb, size,
 };
 use gui_widgets::button::{Button, ButtonConfig, ButtonStyles};
+use gui_widgets::caret::{BlinkPreset, CaretAnimationConfig};
 use gui_widgets::data::{
     Breakpoint, DiagnosticSeverity, DocumentSymbol, GitLineState, GitStatus, LspDiagnostic,
     LspPosition, LspRange, SymbolKind, SyntaxToken, TokenKind,
@@ -106,7 +107,12 @@ impl RootView {
 
         let styles = EditorStyles::new(px(880.), px(560.), rgb(0xe2e8f0), rgb(0x60a5fa))
             .font_family("Maple Mono")
-            .background_color(rgb(0x0f172a));
+            .background_color(rgb(0x0f172a))
+            .caret_animation(
+                CaretAnimationConfig::new()
+                    .blink_preset(BlinkPreset::Fade)
+                    .trail_len(4),
+            );
 
         let editor = Editor::new(
             EditorConfig::new("main.rs", styles, sample_source())

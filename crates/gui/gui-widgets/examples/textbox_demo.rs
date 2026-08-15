@@ -3,6 +3,7 @@ use gpui::{
     Render, Result, SharedString, Styled, Window, WindowBounds, WindowOptions, div, px, relative,
     rgb, size,
 };
+use gui_widgets::caret::CaretShape;
 use gui_widgets::textbox::{Placeholder, TextBoxTitle, Textbox, TextboxConfig, TextboxStyles};
 use std::borrow::Cow;
 
@@ -25,7 +26,6 @@ impl AssetSource for FsAssetSource {
 struct RootView {
     title_textbox: Entity<Textbox>,
     multi_textbox: Entity<Textbox>,
-    wrap_off_textbox: Entity<Textbox>,
     status: SharedString,
 }
 
@@ -33,7 +33,6 @@ impl RootView {
     fn new(cx: &mut Context<Self>) -> Self {
         let weak_changed = cx.weak_entity();
         let weak_changed_notes = weak_changed.clone();
-        let weak_changed_wrap_off = weak_changed.clone();
         let weak_has_text = cx.weak_entity();
 
         let title_styles = TextboxStyles::new(px(340.), px(56.), rgb(0xe2e8f0), rgb(0x60a5fa), rgb(0x64748b))
@@ -78,10 +77,11 @@ impl RootView {
         let multi_styles = TextboxStyles::new(px(340.), px(96.), rgb(0xe2e8f0), rgb(0x60a5fa), rgb(0x64748b))
             .fill_color(rgb(0x0f172a))
             .border_color(rgb(0x334155))
-            .title_top(TextBoxTitle::new("Notes wrap", rgb(0x94a3b8)).text_size(px(12.)))
+            .title_top(TextBoxTitle::new("Notes", rgb(0x94a3b8)).text_size(px(12.)))
             .line_count(3)
-            .wrap(true)
-            .placeholder(Placeholder::new("multi-line notes"));
+            .placeholder(Placeholder::new("multi-line notes"))
+            .caret_style(CaretShape::Block)
+            .caret_blink_ms(800);
 
         let multi_textbox = Textbox::new(
             TextboxConfig::new("notes-box", multi_styles)
@@ -95,36 +95,15 @@ impl RootView {
             cx,
         );
         multi_textbox.update(cx, |textbox, cx| {
-            textbox.set_text("first line\nsecond line", cx);
-        });
-
-        let wrap_off_styles = TextboxStyles::new(px(340.), px(96.), rgb(0xe2e8f0), rgb(0x60a5fa), rgb(0x64748b))
-            .fill_color(rgb(0x0f172a))
-            .border_color(rgb(0x334155))
-            .title_top(TextBoxTitle::new("Notes scroll", rgb(0x94a3b8)).text_size(px(12.)))
-            .line_count(3)
-            .wrap(false)
-            .placeholder(Placeholder::new("scrollable notes"));
-
-        let wrap_off_textbox = Textbox::new(
-            TextboxConfig::new("notes-scroll", wrap_off_styles)
-                .on_text_changed(move |id, text, _window, cx| {
-                    println!("text_changed: {id} text={text:?}");
-                    let _ = weak_changed_wrap_off.update(cx, |root, cx| {
-                        root.status = format!("{id}: {text}").into();
-                        cx.notify();
-                    });
-                }),
-            cx,
-        );
-        wrap_off_textbox.update(cx, |textbox, cx| {
-            textbox.set_text("a long line that scrolls horizontally instead of wrapping", cx);
+            textbox.set_text(
+                "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09",
+                cx,
+            );
         });
 
         RootView {
             title_textbox,
             multi_textbox,
-            wrap_off_textbox,
             status: "idle".into(),
         }
     }
@@ -142,7 +121,6 @@ impl Render for RootView {
             .bg(rgb(0x111827))
             .child(self.title_textbox.clone())
             .child(div().mt(px(24.)).child(self.multi_textbox.clone()))
-            .child(div().mt(px(24.)).child(self.wrap_off_textbox.clone()))
             .child(
                 div()
                     .mt(px(24.))

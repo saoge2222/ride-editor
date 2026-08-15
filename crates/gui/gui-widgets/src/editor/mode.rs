@@ -2,6 +2,7 @@
 pub enum Mode {
     Normal,
     Insert,
+    Visual,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +25,15 @@ impl VimMode {
                 self.mode = Mode::Insert;
                 true
             }
+            (Mode::Normal, "v") => {
+                self.mode = Mode::Visual;
+                true
+            }
             (Mode::Insert, "escape") => {
+                self.mode = Mode::Normal;
+                true
+            }
+            (Mode::Visual, "escape") => {
                 self.mode = Mode::Normal;
                 true
             }

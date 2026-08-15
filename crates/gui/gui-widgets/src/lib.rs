@@ -1,6 +1,8 @@
 pub mod button;
+pub mod caret;
 pub mod data;
 pub mod editor;
+pub mod highlight;
 pub mod hlist;
 pub mod list;
 pub mod textbox;

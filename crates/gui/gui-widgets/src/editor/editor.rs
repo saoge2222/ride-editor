@@ -1,14 +1,20 @@
 use super::buffer::EditorBuffer;
 use super::mode::{Mode, VimMode};
-use crate::data::{
-    Breakpoint, DocumentSymbol, GitLineState, GitStatus, LspDiagnostic, SyntaxToken, TokenKind,
+use crate::caret::{
+    BLOCK_CARET_OPACITY, CaretAnimationConfig, MovePreset, TRAIL_MAX_OPACITY, block_width_for_char,
+    with_blink_animation, with_move_animation,
 };
+use crate::data::{
+    Breakpoint, DocumentSymbol, GitLineState, GitStatus, LspDiagnostic, SyntaxToken,
+};
+use crate::highlight::HighlightService;
 use gpui::{
     App, AppContext, Context, ElementId, Entity, EntityId, FocusHandle, Focusable, HighlightStyle,
     Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    StyledText, Subscription, UnderlineStyle, Window, div, font, px, rgb,
+    ParentElement, Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, StyledText, Subscription, TextRun, UnderlineStyle, Window, div, font, px, rgb,
 };
+use std::collections::VecDeque;
 use std::ops::Range;
 
 const DEFAULT_FONT_FAMILY: &str = "Maple Mono";
@@ -35,12 +41,6 @@ const RGB_GIT_DELETED: u32 = 0xf87171;
 const RGB_BREAKPOINT: u32 = 0xf87171;
 const RGB_STATUS_BAR_TEXT: u32 = 0x94a3b8;
 const RGB_STATUS_BAR_BORDER: u32 = 0x334155;
-const RGB_TOKEN_KEYWORD: u32 = 0x7dd3fc;
-const RGB_TOKEN_IDENTIFIER: u32 = 0xe2e8f0;
-const RGB_TOKEN_NUMBER: u32 = 0xfbbf24;
-const RGB_TOKEN_STRING: u32 = 0x86efac;
-const RGB_TOKEN_COMMENT: u32 = 0x94a3b8;
-const RGB_TOKEN_OPERATOR: u32 = 0xc4b5fd;
 
 #[derive(Clone, Debug)]
 pub struct EditorStyles {
@@ -64,6 +64,7 @@ pub struct EditorStyles {
     pub breakpoint_color: Hsla,
     pub status_bar_text_color: Hsla,
     pub status_bar_border_color: Hsla,
+    pub caret_animation: CaretAnimationConfig,
 }
 
 impl EditorStyles {
@@ -94,6 +95,7 @@ impl EditorStyles {
             breakpoint_color: rgb(RGB_BREAKPOINT).into(),
             status_bar_text_color: rgb(RGB_STATUS_BAR_TEXT).into(),
             status_bar_border_color: rgb(RGB_STATUS_BAR_BORDER).into(),
+            caret_animation: CaretAnimationConfig::new(),
         }
     }
 
@@ -176,6 +178,11 @@ impl EditorStyles {
         self.status_bar_border_color = color.into();
         self
     }
+
+    pub fn caret_animation(mut self, config: CaretAnimationConfig) -> Self {
+        self.caret_animation = config;
+        self
+    }
 }
 
 pub struct EditorConfig {
@@ -245,7 +252,12 @@ pub struct Editor {
     mode: VimMode,
     line_height: Pixels,
     line_number_width: Pixels,
+    char_width: Pixels,
+    prev_caret_pos: Option<Point<Pixels>>,
+    caret_move_seq: u32,
+    trail: VecDeque<Point<Pixels>>,
     scroll: ScrollHandle,
+    highlights: HighlightService,
     diagnostics: Vec<LspDiagnostic>,
     tokens: Vec<SyntaxToken>,
     git_lines: Vec<GitLineState>,
@@ -290,7 +302,12 @@ impl Editor {
                 mode: VimMode::new(),
                 line_height,
                 line_number_width,
+                char_width,
+                prev_caret_pos: None,
+                caret_move_seq: 0,
+                trail: VecDeque::new(),
                 scroll: ScrollHandle::new(),
+                highlights: HighlightService::new(),
                 diagnostics: Vec::new(),
                 tokens: Vec::new(),
                 git_lines: Vec::new(),
@@ -326,6 +343,7 @@ impl Editor {
         match self.mode.mode() {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
+            Mode::Visual => "VISUAL",
         }
     }
 
@@ -400,7 +418,7 @@ impl Editor {
                     }
                 }
             },
-            Mode::Normal => match key {
+            Mode::Normal | Mode::Visual => match key {
                 "h" => self.buffer.move_cursor_left(),
                 "j" => self.buffer.move_cursor_down(),
                 "k" => self.buffer.move_cursor_up(),
@@ -449,14 +467,12 @@ impl Editor {
         let line_start = self.buffer.line_start_index(line);
         let line_end = line_start + line_text.len();
         let mut highlights = Vec::new();
-        for token in &self.tokens {
-            let start = token.start as usize;
-            let end = token.end as usize;
-            if start >= line_start && end <= line_end && end > start {
+        for range in self.highlights.highlight(&line_text, &self.tokens) {
+            if range.end > range.start {
                 highlights.push((
-                    start - line_start..end - line_start,
+                    range.start..range.end,
                     HighlightStyle {
-                        color: Some(token_color(token.kind)),
+                        color: Some(range.color),
                         ..Default::default()
                     },
                 ));
@@ -496,7 +512,6 @@ impl Editor {
 
     fn render_line(&self, line: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let line_height = self.line_height;
-        let is_cursor_line = line == self.buffer.cursor_line() as usize;
         let has_breakpoint = self.breakpoints.iter().any(|b| b.line == line as u32);
 
         let mut breakpoint_cell = div()
@@ -548,28 +563,9 @@ impl Editor {
             .text_color(self.styles.line_number_color)
             .child(format!("{}", line + 1));
 
-        let line_text = self.buffer.line_text(line);
+        let line_text: SharedString = self.buffer.line_text(line).to_string().into();
         let highlights = self.line_highlights(line);
-        let text_cell = if is_cursor_line && self.focused {
-            let cursor_column = self.buffer.cursor_column();
-            let before_idx = self.buffer.column_to_char_index(line, cursor_column)
-                - self.buffer.line_start_index(line);
-            let (before_highlights, after_highlights) = split_highlights(&highlights, before_idx);
-            let before: SharedString = line_text[..before_idx].to_string().into();
-            let after: SharedString = line_text[before_idx..].to_string().into();
-            let mut row = div().flex().items_center();
-            if !before.is_empty() {
-                row = row.child(StyledText::new(before).with_highlights(before_highlights));
-            }
-            row = row.child(div().w(CARET_WIDTH).h(line_height).bg(self.styles.caret_color));
-            if !after.is_empty() {
-                row = row.child(StyledText::new(after).with_highlights(after_highlights));
-            }
-            row
-        } else {
-            let line_text: SharedString = line_text.to_string().into();
-            div().child(StyledText::new(line_text).with_highlights(highlights))
-        };
+        let text_cell = div().child(StyledText::new(line_text).with_highlights(highlights));
 
         div()
             .id(ElementId::Integer(line as u64))
@@ -579,6 +575,132 @@ impl Editor {
             .child(number_cell)
             .child(git_cell)
             .child(text_cell)
+    }
+
+    fn caret_position(&self, window: &mut Window) -> Point<Pixels> {
+        let line = self.buffer.cursor_line() as usize;
+        let before_idx = self.buffer.column_to_char_index(line, self.buffer.cursor_column())
+            - self.buffer.line_start_index(line);
+        let before: SharedString = self.buffer.line_text(line)[..before_idx].to_string().into();
+        let text_width = if before.is_empty() {
+            px(0.)
+        } else {
+            let run = vec![TextRun {
+                len: before.len(),
+                font: font(self.styles.font_family.clone()),
+                color: self.styles.text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            window
+                .text_system()
+                .shape_line(before, self.styles.font_size, &run, None)
+                .width
+        };
+        let x = px(
+            f32::from(self.styles.breakpoint_column_width)
+                + f32::from(self.line_number_width)
+                + f32::from(self.styles.git_marker_column_width)
+                + f32::from(text_width),
+        );
+        Point::new(x, px(line as f32 * f32::from(self.line_height)))
+    }
+
+    fn render_caret(&mut self, window: &mut Window) -> impl IntoElement {
+        let config = self.styles.caret_animation.clone();
+        let caret_pos = self.caret_position(window);
+        let prev = self.prev_caret_pos;
+        let moved = prev.map(|p| p != caret_pos).unwrap_or(false);
+        if moved {
+            if self.trail.len() >= config.trail_len {
+                self.trail.pop_front();
+            }
+            if let Some(p) = prev {
+                self.trail.push_back(p);
+            }
+            self.caret_move_seq += 1;
+        }
+        self.prev_caret_pos = Some(caret_pos);
+
+        let block_caret = self.mode.mode() != Mode::Insert;
+        let shape_width = if block_caret {
+            let line = self.buffer.cursor_line() as usize;
+            let before_idx = self.buffer.column_to_char_index(line, self.buffer.cursor_column())
+                - self.buffer.line_start_index(line);
+            let ch = self.buffer.line_text(line)[before_idx..].chars().next();
+            block_width_for_char(
+                window,
+                ch,
+                self.styles.font_size,
+                Some(self.styles.font_family.clone()),
+                self.char_width,
+            )
+        } else {
+            CARET_WIDTH
+        };
+        let caret_color = if block_caret {
+            self.styles.caret_color.opacity(BLOCK_CARET_OPACITY)
+        } else {
+            self.styles.caret_color
+        };
+
+        let caret_cell = div()
+            .id(ElementId::Name(format!("{}-caret-cell", self.id).into()))
+            .w(shape_width)
+            .h(self.line_height)
+            .bg(caret_color);
+        let blink_id = ElementId::Name(format!("{}-caret-blink", self.id).into());
+        let blinking = with_blink_animation(
+            caret_cell,
+            blink_id,
+            config.blink_preset,
+            config.blink_ms,
+        );
+
+        let mut layer = div()
+            .id(ElementId::Name(format!("{}-caret-layer", self.id).into()))
+            .absolute()
+            .left(px(0.))
+            .top(px(0.));
+        let trail_count = self.trail.len();
+        for (i, pos) in self.trail.iter().enumerate() {
+            let opacity = TRAIL_MAX_OPACITY * (i as f32 + 1.0) / trail_count as f32;
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(pos.x)
+                    .top(pos.y)
+                    .w(shape_width)
+                    .h(self.line_height)
+                    .bg(caret_color.opacity(opacity)),
+            );
+        }
+        if moved && config.move_preset == MovePreset::EaseOut {
+            let move_id = ElementId::Name(
+                format!("{}-caret-move-{}", self.id, self.caret_move_seq).into(),
+            );
+            let from = prev.unwrap();
+            let animated = with_move_animation(
+                div().absolute().w(shape_width).h(self.line_height),
+                move_id,
+                from,
+                caret_pos,
+                config.move_ms,
+            );
+            layer = layer.child(animated.into_any_element());
+        } else {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(caret_pos.x)
+                    .top(caret_pos.y)
+                    .w(shape_width)
+                    .h(self.line_height)
+                    .into_any_element(),
+            );
+        }
+        layer.child(blinking)
     }
 
     fn render_status_bar(&self) -> impl IntoElement {
@@ -639,6 +761,7 @@ impl Render for Editor {
         let line_count = self.buffer.line_count();
         let mut scroll_area = div()
             .id(ElementId::Name(format!("{}-scroll", self.id).into()))
+            .relative()
             .flex()
             .flex_col()
             .overflow_y_scroll()
@@ -672,6 +795,9 @@ impl Render for Editor {
         for line in 0..line_count {
             scroll_area = scroll_area.child(self.render_line(line, cx));
         }
+        if self.focused {
+            scroll_area = scroll_area.child(self.render_caret(window));
+        }
 
         let mut root = div()
             .w(self.styles.width)
@@ -694,34 +820,4 @@ fn git_status_color(status: GitStatus, styles: &EditorStyles) -> Option<Hsla> {
         GitStatus::Deleted => Some(styles.git_deleted_color),
         _ => None,
     }
-}
-
-fn token_color(kind: TokenKind) -> Hsla {
-    match kind {
-        TokenKind::Keyword => rgb(RGB_TOKEN_KEYWORD).into(),
-        TokenKind::Identifier => rgb(RGB_TOKEN_IDENTIFIER).into(),
-        TokenKind::Number => rgb(RGB_TOKEN_NUMBER).into(),
-        TokenKind::String => rgb(RGB_TOKEN_STRING).into(),
-        TokenKind::Comment => rgb(RGB_TOKEN_COMMENT).into(),
-        TokenKind::Operator => rgb(RGB_TOKEN_OPERATOR).into(),
-    }
-}
-
-fn split_highlights(
-    highlights: &[(Range<usize>, HighlightStyle)],
-    split: usize,
-) -> (Vec<(Range<usize>, HighlightStyle)>, Vec<(Range<usize>, HighlightStyle)>) {
-    let mut before = Vec::new();
-    let mut after = Vec::new();
-    for (range, style) in highlights {
-        if range.end <= split {
-            before.push((range.clone(), style.clone()));
-        } else if range.start >= split {
-            after.push((range.start - split..range.end - split, style.clone()));
-        } else {
-            before.push((range.start..split, style.clone()));
-            after.push((0..range.end - split, style.clone()));
-        }
-    }
-    (before, after)
 }
